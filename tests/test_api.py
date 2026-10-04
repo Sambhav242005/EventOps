@@ -7,6 +7,7 @@ os.environ.update({"LLM_BACKEND": "mock", "MESSAGING_BACKEND": "mock",
 from fastapi.testclient import TestClient
 
 from app.db import get_conn, init_db, seed_demo
+from tests.helpers import MEM_NAME, ORG_NAME, first_vendor, mem_code, org_code
 
 
 def fresh_client():
@@ -21,8 +22,9 @@ def fresh_client():
     return TestClient(app)
 
 
-def auth(c, name="Asha", code=None):
-    code = code or os.environ.get("DEMO_ORG_PASS", "1111")
+def auth(c, name=None, code=None):
+    name = name or ORG_NAME
+    code = code or org_code()
     tok = c.post("/api/login", json={"name": name, "passcode": code}).json()["token"]
     return {"Authorization": f"Bearer {tok}"}
 
@@ -49,15 +51,15 @@ def test_whatsapp_webhook_extract_and_vendor_update():
     with fresh_client() as c:
         h = auth(c)
         r = c.post("/webhooks/whatsapp",
-                   json={"id": "w-api-1", "From": "+919100000001",
+                   json={"id": "w-api-1", "From": first_vendor()["phone"],
                          "Body": "Sorry, fully booked, cannot do it"}).json()
         assert r["ok"] and r["extracted"]["available"] is False
         ev = c.get("/api/event", headers=h).json()
-        sharma = [v for v in ev["vendors"] if v["name"] == "Sharma Caterers"][0]
+        sharma = [v for v in ev["vendors"] if v["name"] == first_vendor()["name"]][0]
         assert sharma["status"] == "cancelled"
         # duplicate delivery -> deduped, no double-processing
         r2 = c.post("/webhooks/whatsapp",
-                    json={"id": "w-api-1", "From": "+919100000001", "Body": "Yes!"}).json()
+                    json={"id": "w-api-1", "From": first_vendor()["phone"], "Body": "Yes!"}).json()
         assert r2.get("dedupe") is True
         # opt-out honored on next send path
         c.post("/webhooks/whatsapp", json={"id": "w-api-2", "From": "+9191",
@@ -134,7 +136,7 @@ def test_vendor_watch_suggests_next():
         conn.commit()
         conn.close()
         out = asyncio.new_event_loop().run_until_complete(vendor_watch(1))
-        assert "Sharma Caterers" in out["flagged"]
+        assert first_vendor()["name"] in out["flagged"]
         conn = get_conn()
         alert = conn.execute("SELECT text FROM alerts WHERE kind='vendor_watch' ORDER BY id DESC LIMIT 1").fetchone()
         conn.close()

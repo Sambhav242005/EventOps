@@ -14,11 +14,14 @@ from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from .env import load as _load_env
+_load_env()
+
 from .auth import hash_code, issue_token, verify_token
 from .calls import build_call_brief, extract_call_fields, get_calls
 from .db import get_conn, init_db, now_iso, seed_demo
 from .decision import approval_rule, draft_notice, risk_level
-from .llm import get_llm
+from .llm import get_llm, parse_json_lenient
 from .messaging import _opted_out, extract_vendor_fields, get_messaging
 from .ops import apply_photo_names, check_in_token, export_csv, table_rows
 from .research import candidate_search, research_loop, vendor_watch, weather_check
@@ -314,7 +317,11 @@ async def approve_call(req: Request) -> JSONResponse:
         if n_calls >= int(os.environ.get("CALL_MAX_PER_EVENT", "5")):
             return JSONResponse({"ok": False, "error": "call cap reached"}, status_code=400)
         brief = build_call_brief(dict(vendor), dict(ev), lang)
-        res = await get_calls().start_call(vendor["phone"] or "+919100000001", brief)
+        to = vendor["phone"] or (conn.execute(
+            "SELECT phone FROM vendors WHERE phone<>'' LIMIT 1").fetchone() or {"phone": ""})["phone"]
+        if not to:
+            return JSONResponse({"ok": False, "error": "vendor has no phone number"}, status_code=400)
+        res = await get_calls().start_call(to, brief)
         conn.execute("UPDATE call_log SET status=?, conversation_id=?, transcript=? WHERE id=?",
                      (res.get("status", "initiated"), res.get("conversation_id", ""),
                       res.get("transcript", ""), cid))
@@ -480,7 +487,7 @@ async def photo_checkin(req: Request) -> JSONResponse:
                                   "content": "Read this paper sign-in sheet photo. Return JSON {names:[{name,confidence}]}. Never guess; low confidence if unsure.",
                                   "images": [b64]}]})
                 content = r.json()["message"]["content"]
-                names = json.loads(content).get("names", [])
+                names = parse_json_lenient(content).get("names", [])
         elif backend == "gemini":
             names = []  # Gemini vision wired via GEMINI_API_KEY; mock-safe fallback below
         if not names:  # mock fallback: treat `names` field as typed list for demo/tests

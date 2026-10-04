@@ -89,52 +89,60 @@ def now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S%z")
 
 
+def seed_file() -> Path:
+    return Path(os.environ.get("SEED_FILE", Path(__file__).resolve().parent.parent / "seed.json"))
+
+
 def seed_demo(db_path: str = DB_PATH) -> int:
-    """Seed one demo event (tomorrow, outdoor venue). Idempotent. Returns event_id."""
+    """Seed demo content from seed.json (override path via SEED_FILE). Idempotent."""
+    import json
     from datetime import datetime, timedelta
     conn = get_conn(db_path)
     row = conn.execute("SELECT id FROM events LIMIT 1").fetchone()
     if row:
         conn.close()
         return int(row["id"])
-    tomorrow = (datetime.now() + timedelta(days=1)).replace(hour=18, minute=0, second=0, microsecond=0)
+    seed = json.loads(seed_file().read_text())
+    ev = seed["event"]
+    hh, mm = (ev.get("time", "18:00") + ":00").split(":")[:2]
+    dt = (datetime.now() + timedelta(days=int(ev.get("days_ahead", 1)))).replace(
+        hour=int(hh), minute=int(mm), second=0, microsecond=0)
     cur = conn.execute(
         "INSERT INTO events(name,date_time,venue,lat,lng,headcount,budget,timezone)"
         " VALUES(?,?,?,?,?,?,?,?)",
-        ("PyData Indore Fest", tomorrow.strftime("%Y-%m-%dT%H:%M:%S"),
-         "Outdoor Ground, Indore", 22.7196, 75.8577, 300, 150000, "Asia/Kolkata"),
+        (ev["name"], dt.strftime("%Y-%m-%dT%H:%M:%S"), ev.get("venue", ""),
+         ev.get("lat", 0), ev.get("lng", 0), ev.get("headcount", 0),
+         ev.get("budget", 0), ev.get("timezone", "Asia/Kolkata")),
     )
     eid = int(cur.lastrowid)
     conn.executemany(
         "INSERT INTO members(event_id,name,role,passcode) VALUES(?,?,?,?)",
-        [(eid, "Asha", "organizer", _code_hash(os.environ.get("DEMO_ORG_PASS", "1111"))),
-         (eid, "Ravi", "member", _code_hash(os.environ.get("DEMO_MEMBER_PASS", "2222")))],
+        [(eid, m["name"], m.get("role", "member"),
+          _code_hash(os.environ.get(m.get("passcode_env", ""), m.get("default", ""))))
+         for m in seed.get("members", [])],
     )
     conn.executemany(
         "INSERT INTO vendors(event_id,name,category,phone,whatsapp,status,quote,conditions)"
         " VALUES(?,?,?,?,?,?,?,?)",
-        [
-            (eid, "Sharma Caterers", "catering", "+919100000001", "+919100000001",
-             "confirmed", 80000, "500 plates, veg"),
-            (eid, "City Tent House", "tent", "+919100000002", "+919100000002",
-             "confirmed", 30000, "waterproof"),
-            (eid, "DJ Sound Raja", "sound", "+919100000003", "+919100000003",
-             "unknown", 15000, ""),
-        ],
+        [(eid, v["name"], v.get("category", "misc"), v.get("phone", ""),
+          v.get("whatsapp", ""), v.get("status", "unknown"),
+          v.get("quote", 0), v.get("conditions", ""))
+         for v in seed.get("vendors", [])],
     )
     conn.executemany(
         "INSERT INTO tasks(event_id,title,owner,due,status) VALUES(?,?,?,?,?)",
-        [(eid, "Confirm caterer headcount", "Ravi", "today", "open"),
-         (eid, "Print QR check-in sheets", "Asha", "today", "open")],
+        [(eid, t["title"], t.get("owner", ""), t.get("due", ""), t.get("status", "open"))
+         for t in seed.get("tasks", [])],
     )
-    for i, nm in enumerate(["Guest %02d" % (i + 1) for i in range(5)], start=1):
+    att = seed.get("attendees", {})
+    for i in range(1, int(att.get("count", 0)) + 1):
         conn.execute(
             "INSERT INTO attendees(event_id,name,qr_token) VALUES(?,?,?)",
-            (eid, nm, f"QR-{i:04d}"),
+            (eid, att["name_pattern"] % i, att["token_pattern"] % i),
         )
     conn.execute(
         "INSERT INTO messages(event_id,sender,text,created_at) VALUES(?,?,?,?)",
-        (eid, "system", "Welcome to the event room. Tag @agent to ask for help.", now_iso()),
+        (eid, "system", seed.get("welcome", "Welcome."), now_iso()),
     )
     conn.commit()
     conn.close()

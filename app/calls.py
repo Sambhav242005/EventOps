@@ -20,9 +20,10 @@ import time
 import uuid
 
 import httpx
-from dotenv import load_dotenv
 
-load_dotenv()
+from .env import load as _load_env
+
+_load_env()
 log = logging.getLogger("eventops.call")
 
 CALL_BRIEF_GUARDRAILS = (

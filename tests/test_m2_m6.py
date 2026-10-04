@@ -9,6 +9,7 @@ from app.calls import extract_call_fields
 from app.decision import approval_rule, rank_candidates, risk_level, triage
 from app.messaging import MockAdapter, extract_vendor_fields
 from app.ops import apply_photo_names, check_in_token, export_csv
+from tests.helpers import first_guest, first_token
 
 import sys
 sys.path.insert(0, ".")
@@ -71,12 +72,12 @@ def test_checkin_duplicate(tmp_path=None):
     init_db()
     seed_demo()
     conn = get_conn()  # isolate: reset door state (DB file persists across runs)
-    conn.execute("UPDATE attendees SET checked_in=0, checked_in_at='' WHERE qr_token='QR-0001'")
+    conn.execute("UPDATE attendees SET checked_in=0, checked_in_at='' WHERE qr_token='" + first_token() + "'")
     conn.commit()
     conn.close()
-    r1 = check_in_token("QR-0001")
+    r1 = check_in_token(first_token())
     assert r1["ok"] and not r1.get("duplicate")
-    r2 = check_in_token("QR-0001")
+    r2 = check_in_token(first_token())
     assert r2.get("duplicate") is True and r2.get("checked_in_at")
 
 
@@ -84,9 +85,9 @@ def test_photo_never_guesses():
     from app.db import init_db, seed_demo
     init_db()
     seed_demo()
-    out = apply_photo_names([{"name": "Guest 01", "confidence": 0.95},
+    out = apply_photo_names([{"name": first_guest(), "confidence": 0.95},
                              {"name": "Zzz Unknown", "confidence": 0.4}])
-    assert "Guest 01" in out["marked"]
+    assert first_guest() in out["marked"]
     assert any(r["name"] == "Zzz Unknown" for r in out["review"])
 
 

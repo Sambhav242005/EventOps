@@ -21,11 +21,11 @@ import os
 import time
 
 import httpx
-from dotenv import load_dotenv
 
+from .env import load as _load_env
 from .models import ACTION_JSON_SCHEMA, SYSTEM_PROMPT, AgentAction
 
-load_dotenv()
+_load_env()
 log = logging.getLogger("eventops.llm")
 
 
@@ -42,6 +42,20 @@ def coerce_action(data: dict) -> AgentAction:
         # Never crash the room on a bad model reply.
         txt = str(data)[:500] if isinstance(data, dict) else str(data)[:500]
         return AgentAction(type="answer", text=txt or "Sorry, I could not parse that.")
+
+
+def parse_json_lenient(content: str) -> dict:
+    """Cloud models often wrap JSON in ```json fences — strip and extract."""
+    import re
+    t = content.strip()
+    m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", t, re.S)
+    if m:
+        t = m.group(1)
+    else:  # bare object embedded in prose: first { to last }
+        s, e = t.find("{"), t.rfind("}")
+        if 0 <= s < e:
+            t = t[s:e + 1]
+    return json.loads(t)
 
 
 class MockLLMAdapter(LLMAdapter):
@@ -85,6 +99,7 @@ class OllamaAdapter(LLMAdapter):
     def __init__(self, model: str | None = None, host: str | None = None,
                  timeout_s: float = 60.0):
         self.model = model or os.environ.get("OLLAMA_MODEL", "gemma4:31b-cloud")
+        self.fallback = os.environ.get("OLLAMA_FALLBACK_MODEL", "gemma3:1b")
         self.host = (host or os.environ.get("OLLAMA_HOST", "http://localhost:11434")).rstrip("/")
         self.timeout = float(os.environ.get("OLLAMA_TIMEOUT_S", timeout_s))
 
@@ -99,19 +114,33 @@ class OllamaAdapter(LLMAdapter):
             "format": ACTION_JSON_SCHEMA,
         }
         t0 = time.time()
+        used = self.model
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as c:
-                r = await c.post(f"{self.host}/api/chat", json=payload)
+                r = await c.post(f"{self.host}/api/chat",
+                                 json={**payload, "model": self.model})
                 r.raise_for_status()
                 content = r.json().get("message", {}).get("content", "")
         except Exception as e:
-            log.warning("ollama failed: %s", e)
-            return AgentAction(type="answer",
-                               text="LLM backend unreachable (Ollama). Running in mock mode — check OLLAMA_HOST/MODEL.")
-        log.info("ollama latency_ms=%d model=%s", int((time.time() - t0) * 1000), self.model)
+            log.warning("ollama primary %s failed: %s", self.model, e)
+            if not (self.fallback and self.fallback != self.model):
+                return AgentAction(type="answer",
+                                   text="LLM backend unreachable (Ollama). Running in mock mode — check OLLAMA_HOST/MODEL.")
+            try:
+                used = self.fallback
+                async with httpx.AsyncClient(timeout=self.timeout) as c:
+                    r = await c.post(f"{self.host}/api/chat",
+                                     json={**payload, "model": self.fallback})
+                    r.raise_for_status()
+                    content = r.json().get("message", {}).get("content", "")
+            except Exception as e2:
+                log.warning("ollama fallback %s failed: %s", self.fallback, e2)
+                return AgentAction(type="answer",
+                                   text="LLM backend unreachable (Ollama). Running in mock mode — check OLLAMA_HOST/MODEL.")
+        log.info("ollama latency_ms=%d model=%s", int((time.time() - t0) * 1000), used)
         for _ in range(2):  # strict JSON + one retry
             try:
-                return coerce_action(json.loads(content))
+                return coerce_action(parse_json_lenient(content))
             except Exception:
                 content = '{"type": "answer", "text": ' + json.dumps(content[:400]) + "}"
         return AgentAction(type="answer", text="Sorry, I could not understand the model reply.")
@@ -150,7 +179,7 @@ class GeminiAdapter(LLMAdapter):
             return AgentAction(type="answer", text="Gemini backend unreachable. Try mock/ollama mode.")
         log.info("gemini latency_ms=%d model=%s", int((time.time() - t0) * 1000), self.model)
         try:
-            return coerce_action(json.loads(content))
+            return coerce_action(parse_json_lenient(content))
         except Exception:
             return AgentAction(type="answer", text=content[:500])
 

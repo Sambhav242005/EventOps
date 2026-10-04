@@ -1,0 +1,28 @@
+{
+  "event": {
+    "name": "PyData Indore Fest",
+    "days_ahead": 1,
+    "time": "18:00",
+    "venue": "Outdoor Ground, Indore",
+    "lat": 22.7196,
+    "lng": 75.8577,
+    "headcount": 300,
+    "budget": 150000,
+    "timezone": "Asia/Kolkata"
+  },
+  "members": [
+    {"name": "Asha", "role": "organizer", "passcode_env": "DEMO_ORG_PASS", "default": "1111"},
+    {"name": "Ravi", "role": "member", "passcode_env": "DEMO_MEMBER_PASS", "default": "2222"}
+  ],
+  "vendors": [
+    {"name": "Sharma Caterers", "category": "catering", "phone": "+919100000001", "whatsapp": "+919100000001", "status": "confirmed", "quote": 80000, "conditions": "500 plates, veg"},
+    {"name": "City Tent House", "category": "tent", "phone": "+919100000002", "whatsapp": "+919100000002", "status": "confirmed", "quote": 30000, "conditions": "waterproof"},
+    {"name": "DJ Sound Raja", "category": "sound", "phone": "+919100000003", "whatsapp": "+919100000003", "status": "unknown", "quote": 15000, "conditions": ""}
+  ],
+  "tasks": [
+    {"title": "Confirm caterer headcount", "owner": "Ravi", "due": "today", "status": "open"},
+    {"title": "Print QR check-in sheets", "owner": "Asha", "due": "today", "status": "open"}
+  ],
+  "attendees": {"name_pattern": "Guest %02d", "count": 5, "token_pattern": "QR-%04d"},
+  "welcome": "Welcome to the event room. Tag @agent to ask for help."
+}

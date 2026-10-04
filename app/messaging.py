@@ -18,9 +18,10 @@ import time
 import uuid
 
 import httpx
-from dotenv import load_dotenv
 
-load_dotenv()
+from .env import load as _load_env
+
+_load_env()
 log = logging.getLogger("eventops.msg")
 
 _seen_inbound: set[str] = set()       # webhook dedupe by provider message id

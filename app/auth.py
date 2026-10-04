@@ -1,7 +1,7 @@
 """Demo-grade auth: passcode login -> HMAC-signed tokens; roles enforced server-side.
 
 Threat model (honest, see README): stops name-spoofing in the room (anyone
-could previously approve as 'Asha'), so organizer-only gates actually hold.
+could previously approve as the organizer), so organizer-only gates actually hold.
 NOT production auth: no TLS/password-hygiene claims, passcodes are short demo
 codes — set DEMO_ORG_PASS / DEMO_MEMBER_PASS in .env and change defaults.
 """
@@ -14,8 +14,6 @@ import os
 import time
 
 SECRET = os.environ.get("AUTH_SECRET", "dev-only-change-me")
-ORG_PASS = os.environ.get("DEMO_ORG_PASS", "1111")
-MEMBER_PASS = os.environ.get("DEMO_MEMBER_PASS", "2222")
 TOKEN_TTL_S = 12 * 3600
 
 
