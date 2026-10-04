@@ -103,11 +103,27 @@ async def vendor_watch(event_id: int = 1) -> dict:
         elif v["status"] in ("unknown", "contacted") and hrs < 24:
             flagged.append(v)
     for v in flagged:
+        # suggest next: freshest shortlisted/new lead in the same category, if any
+        sugg = conn_suggest(event_id, v["category"])
+        text = (f"{v['name']} ({v['category']}) is {v['status']} with {hrs:.0f}h to go."
+                + (f" Suggested next: {sugg['name']} ({sugg['availability_note']})."
+                   if sugg else " No backup lead yet — run research."))
         add_alert(event_id, "vendor_watch", "high" if v["status"] == "cancelled" else "medium",
-                  f"{v['name']} ({v['category']}) is {v['status']} with {hrs:.0f}h to go.",
-                  {"vendor_id": v["id"], "hours_left": round(hrs, 1)})
+                  text, {"vendor_id": v["id"], "hours_left": round(hrs, 1),
+                         "suggested_next": sugg})
     log_run(event_id, "vendor_watch", {"hours_left": hrs}, {"flagged": len(flagged)}, "watch-rule")
     return {"flagged": [v["name"] for v in flagged], "hours_left": hrs}
+
+
+def conn_suggest(event_id: int, category: str) -> dict | None:
+    conn = get_conn()
+    try:
+        r = conn.execute("""SELECT name,availability_note,price_hint FROM vendor_candidates
+                            WHERE event_id=? AND lower(category)=lower(?) AND status IN ('new','shortlisted')
+                            ORDER BY id DESC LIMIT 1""", (event_id, category)).fetchone()
+        return dict(r) if r else None
+    finally:
+        conn.close()
 
 
 async def candidate_search(event_id: int, category: str) -> dict:
