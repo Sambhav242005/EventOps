@@ -342,6 +342,12 @@ export default function Room() {
           setMulti(true);
           setEvents(list);
           saveMyEvents(list);
+          if (list.length === 0 && s.role === "organizer") {
+            eventIdRef.current = 0;
+            setEventId(0);
+            router.replace("/dashboard/manage");
+            return;
+          }
           if (list.length > 0 && !list.some((e) => Number(e.id) === Number(eid))) {
             eid = Number(list[0].id) || DEFAULT_EVENT_ID;
             eventIdRef.current = eid;

@@ -178,29 +178,45 @@ def token_member(req: Request) -> dict:
 
 @app.post("/api/register")
 async def register(req: Request) -> JSONResponse:
-    """Join the default event as a team member or organizer."""
+    """Join the demo event as a member, or create an organization owner account."""
     data = await req.json()
     name = str(data.get("name", "")).strip()[:60]
     code = str(data.get("passcode", ""))
     role = str(data.get("role", "member"))
     eid = req_event(req)
+    organization_name = str(data.get("organization_name", "")).strip()[:120]
     if len(name) < 2 or len(code) < 4:
         return JSONResponse({"ok": False, "error": "name (2+) and passcode (4+) required"},
                             status_code=400)
     if role not in {"member", "organizer"}:
         return JSONResponse({"ok": False, "error": "role must be member or organizer"},
                             status_code=400)
+    if role == "organizer" and len(organization_name) < 2:
+        return JSONResponse({"ok": False, "error": "organization name (2+ characters) required"},
+                            status_code=400)
     conn = get_conn()
     try:
-        ev = conn.execute("SELECT org_id,team_id FROM events WHERE id=?", (eid,)).fetchone()
-        if not ev:
-            return JSONResponse({"ok": False, "error": "event not found"}, status_code=404)
-        if conn.execute("SELECT id FROM members WHERE event_id=? AND lower(name)=lower(?)",
-                        (eid, name)).fetchone():
-            return JSONResponse({"ok": False, "error": "name taken"}, status_code=409)
-        conn.execute("INSERT INTO members(event_id,name,role,passcode,phone,org_id,team_id) "
-                     "VALUES(?,?,?,?,?,?,?)",
-                     (eid, name, role, hash_code(code), "", ev["org_id"], ev["team_id"]))
+        if role == "organizer":
+            org_cur = conn.execute("INSERT INTO organizations(name,created_at) VALUES(?,?)",
+                                   (organization_name, now_iso()))
+            org_id = int(org_cur.lastrowid)
+            team_cur = conn.execute("INSERT INTO teams(org_id,name,created_at) VALUES(?,?,?)",
+                                    (org_id, "Core Team", now_iso()))
+            team_id = int(team_cur.lastrowid)
+            # event_id=0 means this organization owner has not created their first event yet.
+            conn.execute("INSERT INTO members(event_id,name,role,passcode,phone,org_id,team_id) "
+                         "VALUES(0,?,?,?,?,?,?)",
+                         (name, role, hash_code(code), "", org_id, team_id))
+        else:
+            ev = conn.execute("SELECT org_id,team_id FROM events WHERE id=?", (eid,)).fetchone()
+            if not ev:
+                return JSONResponse({"ok": False, "error": "event not found"}, status_code=404)
+            if conn.execute("SELECT id FROM members WHERE event_id=? AND lower(name)=lower(?)",
+                            (eid, name)).fetchone():
+                return JSONResponse({"ok": False, "error": "name taken"}, status_code=409)
+            conn.execute("INSERT INTO members(event_id,name,role,passcode,phone,org_id,team_id) "
+                         "VALUES(?,?,?,?,?,?,?)",
+                         (eid, name, role, hash_code(code), "", ev["org_id"], ev["team_id"]))
         conn.commit()
     finally:
         conn.close()
@@ -215,9 +231,9 @@ async def login(req: Request) -> JSONResponse:
     conn = get_conn()
     try:
         rows = conn.execute("SELECT m.id,m.event_id,m.name,m.role,m.passcode,m.org_id,m.team_id,"
-                            "COALESCE(t.name,'Team ' || COALESCE(m.team_id,m.event_id)) || ' · ' || e.name AS team_name "
+                            "COALESCE(t.name,'Team') || ' · ' || COALESCE(e.name,'No events yet') AS team_name "
                             "FROM members m LEFT JOIN teams t ON t.id=m.team_id "
-                            "JOIN events e ON e.id=m.event_id "
+                            "LEFT JOIN events e ON e.id=m.event_id "
                             "WHERE lower(m.name)=lower(?) ORDER BY m.id", (name,)).fetchall()
     finally:
         conn.close()
@@ -266,9 +282,8 @@ async def my_events(req: Request) -> JSONResponse:
 @app.post("/api/events")
 async def create_event(req: Request) -> JSONResponse:
     """Create an event in the signed-in organizer's organization/team."""
-    _, role = require_auth(req)
-    member = req_member(req)
-    if role != "organizer":
+    member = token_member(req)
+    if member.get("role") != "organizer":
         return JSONResponse({"ok": False, "error": "organizer only"}, status_code=403)
     data = await req.json()
     name = str(data.get("name", "")).strip()[:120]
@@ -685,6 +700,7 @@ async def sender_loop(interval_s: int = 15) -> None:
             try:
                 due = conn.execute(
                     "SELECT id FROM outbound_log WHERE status='approved' AND send_at<>'' "
+                    "AND idempotency_key NOT LIKE 'demo:%' "
                     "AND send_at <= strftime('%Y-%m-%dT%H:%M:%S','now','localtime')").fetchall()
             finally:
                 conn.close()

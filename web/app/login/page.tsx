@@ -78,6 +78,14 @@ export default function Login() {
       saveSession({ token: r.token, name: sessionName, role: sessionRole, event_id: 1 });
       // Best-effort: pull the user's event list; fall back to single-event mode.
       const events = await fetchMyEvents(r.token);
+      if (events !== null && events.length === 0 && sessionRole === "organizer") {
+        saveMyEvents([]);
+        setEventId(0);
+        saveSession({ token: r.token, name: sessionName, role: sessionRole, event_id: 0 });
+        setTeamOptions(null);
+        router.replace("/dashboard/manage");
+        return;
+      }
       if (events === null || events.length === 0) {
         saveMyEvents([]);
         setEventId(1);

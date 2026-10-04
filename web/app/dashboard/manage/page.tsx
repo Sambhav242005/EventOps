@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { DashboardPageNav } from "@/components/dashboard-page-nav";
-import { loadSession, MyEvent, setEventId } from "@/lib/session";
+import { loadSession, MyEvent, setEventId as saveSessionEventId } from "@/lib/session";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 type Member = { id: number; name: string; role: "member" | "organizer"; team_id: number | null };
@@ -14,7 +14,7 @@ type Member = { id: number; name: string; role: "member" | "organizer"; team_id:
 export default function ManageWorkspacePage() {
   const [token, setToken] = useState("");
   const [role, setRole] = useState("");
-  const [eventId, setEventId] = useState(1);
+  const [activeEventId, setActiveEventId] = useState(0);
   const [origin, setOrigin] = useState("");
   const [events, setEvents] = useState<MyEvent[]>([]);
   const [members, setMembers] = useState<Member[]>([]);
@@ -32,23 +32,32 @@ export default function ManageWorkspacePage() {
   const loadData = useCallback(async () => {
     if (!token) return;
     try {
-      const [eventRes, memberRes] = await Promise.all([
-        authFetch("/api/myevents"),
-        authFetch(`/api/members?event_id=${eventId}`),
-      ]);
-      if (eventRes.ok) setEvents(await eventRes.json());
+      const eventRes = await authFetch("/api/myevents");
+      if (!eventRes.ok) throw new Error("Could not load your events.");
+      const eventList = (await eventRes.json()) as MyEvent[];
+      setEvents(eventList);
+      if (eventList.length === 0) {
+        setMembers([]);
+        setNotice(role === "organizer" ? "Create your first event to get started." : "No events are available for this account yet.");
+        return;
+      }
+      const selectedId = eventList.some(event => event.id === activeEventId)
+        ? activeEventId
+        : eventList[0].id;
+      if (selectedId !== activeEventId) setActiveEventId(selectedId);
+      const memberRes = await authFetch(`/api/members?event_id=${selectedId}`);
       if (memberRes.ok) setMembers(await memberRes.json());
-      else if (memberRes.status === 403) setNotice("Organizer access required. Sign in with your organizer account to manage events and member roles.");
+      else if (memberRes.status === 403) setNotice("Your events are ready. Only organizers can view or change member roles.");
       else setNotice("Could not load members. Please retry.");
-    } catch { setNotice("Could not reach the server. Please retry."); }
-  }, [authFetch, eventId, token]);
+    } catch (error) { setNotice(error instanceof Error ? error.message : "Could not reach the server. Please retry."); }
+  }, [activeEventId, authFetch, role, token]);
 
   useEffect(() => {
     const session = loadSession();
     if (!session) return;
     setToken(session.token);
     setRole(session.role);
-    setEventId(session.event_id || 1);
+    setActiveEventId(session.event_id ?? 0);
     setOrigin(window.location.origin);
   }, []);
   useEffect(() => { void loadData(); }, [loadData]);
@@ -58,23 +67,23 @@ export default function ManageWorkspacePage() {
     if (busy || name.trim().length < 2 || !when) return;
     setBusy(true); setNotice("");
     try {
-      const response = await authFetch(`/api/events?event_id=${eventId}`, {
+      const response = await authFetch(`/api/events?event_id=${activeEventId}`, {
         method: "POST",
         body: JSON.stringify({ name: name.trim(), date_time: new Date(when).toISOString(), venue }),
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "Could not create event");
-      setEventId(result.event_id);
+      setActiveEventId(result.event_id);
+      saveSessionEventId(result.event_id);
       setName(""); setWhen(""); setVenue("");
       setNotice("Event created. Its guest check-in link is ready below.");
-      setTimeout(() => void loadData(), 100);
     } catch (error) { setNotice(error instanceof Error ? error.message : "Could not create event"); }
     finally { setBusy(false); }
   }
 
   async function changeRole(member: Member, nextRole: string) {
     try {
-      const response = await authFetch(`/api/members/${member.id}?event_id=${eventId}`, {
+      const response = await authFetch(`/api/members/${member.id}?event_id=${activeEventId}`, {
         method: "PATCH", body: JSON.stringify({ role: nextRole }),
       });
       const result = await response.json();
@@ -85,7 +94,7 @@ export default function ManageWorkspacePage() {
   }
 
   function openEvent(id: number) {
-    setEventId(id);
+    saveSessionEventId(id);
     window.location.href = "/dashboard";
   }
 
@@ -97,7 +106,8 @@ export default function ManageWorkspacePage() {
         <p className="mt-1 text-sm text-muted-foreground">Create events, share a unique entrance check-in QR, and set member roles.</p>
       </div>
       {notice && <p role="status" className="rounded-xl border bg-card px-4 py-3 text-sm">{notice}</p>}
-      {role !== "organizer" && <p className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">You’re signed in as a member. Only an organizer can manage events and roles. For the included demo, sign in as Asha with passcode 1111.</p>}
+      {role === "organizer" && events.length === 0 && <p className="rounded-xl border border-primary/20 bg-primary/5 px-4 py-3 text-sm">Your organization is ready. Create your first event to unlock its dashboard, guest QR, and team tools.</p>}
+      {role !== "organizer" && <p className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">You’re signed in as a member. Ask an organizer to create events or update your role.</p>}
       <div className="grid items-start gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader><CardTitle>Create an event</CardTitle><p className="text-sm text-muted-foreground">Events belong to your organization and will appear in the event switcher.</p></CardHeader>

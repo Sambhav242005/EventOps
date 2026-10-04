@@ -15,18 +15,21 @@ export default function Register() {
   const [name, setName] = useState("");
   const [pass, setPass] = useState("");
   const [role, setRole] = useState<"member" | "organizer">("member");
+  const [organizationName, setOrganizationName] = useState("");
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
 
   async function submit() {
-    if (busy || name.trim().length < 2 || pass.length < 4) return;
+    if (busy || name.trim().length < 2 || pass.length < 4 ||
+        (role === "organizer" && organizationName.trim().length < 2)) return;
     setBusy(true);
     setMsg("");
     try {
       const r = await fetch(`${API}/api/register`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, passcode: pass, role }),
+        body: JSON.stringify({ name, passcode: pass, role,
+          ...(role === "organizer" ? { organization_name: organizationName.trim() } : {}) }),
       }).then((x) => x.json());
       if (!r.ok) {
         setMsg(`Registration failed: ${r.error ?? "unknown error"}`);
@@ -54,6 +57,12 @@ export default function Register() {
             | { events?: import("@/lib/session").MyEvent[] };
           const list = Array.isArray(data) ? data : (data.events ?? []);
           saveMyEvents(list);
+          if (list.length === 0 && l.role === "organizer") {
+            setEventId(0);
+            saveSession({ token: l.token, name: l.name ?? name, role: l.role, event_id: 0 });
+            router.replace("/dashboard/manage");
+            return;
+          }
           const firstId = Number(list[0]?.id) || 1;
           setEventId(firstId);
           saveSession({
@@ -77,7 +86,8 @@ export default function Register() {
     }
   }
 
-  const valid = name.trim().length >= 2 && pass.length >= 4;
+  const valid = name.trim().length >= 2 && pass.length >= 4 &&
+    (role !== "organizer" || organizationName.trim().length >= 2);
 
   return (
     <main className="mx-auto w-full max-w-md space-y-4 p-5 pt-16">
@@ -88,9 +98,9 @@ export default function Register() {
       </div>
       <Card>
         <CardHeader>
-          <CardTitle>Join the team</CardTitle>
+          <CardTitle>Join or create a workspace</CardTitle>
           <p className="text-sm text-muted-foreground">
-            Choose your account access. Anyone can create an organizer account.
+              Create a team-member account, or set up an organization that starts with no events.
           </p>
         </CardHeader>
         <CardContent className="space-y-3">
@@ -102,9 +112,15 @@ export default function Register() {
             </label>
             <label className="flex cursor-pointer items-start gap-3 rounded-xl border bg-background p-3">
               <input type="radio" name="account-role" value="organizer" checked={role === "organizer"} onChange={() => setRole("organizer")} className="mt-1 accent-primary" />
-              <span><span className="block text-sm font-semibold">Organizer</span><span className="block text-xs text-muted-foreground">Manage events, members, and approvals.</span></span>
+              <span><span className="block text-sm font-semibold">Create an organization</span><span className="block text-xs text-muted-foreground">You’ll create its first event after signing in.</span></span>
             </label>
           </fieldset>
+          {role === "organizer" && (
+            <div className="space-y-1.5">
+              <label htmlFor="reg-org-name" className="text-sm font-medium">Organization name</label>
+              <Input id="reg-org-name" value={organizationName} onChange={e => setOrganizationName(e.target.value)} onKeyDown={e => e.key === "Enter" && submit()} placeholder="e.g. Indore Events" autoComplete="organization" />
+            </div>
+          )}
           <div className="space-y-1.5">
             <label htmlFor="reg-name" className="text-sm font-medium">
               Name

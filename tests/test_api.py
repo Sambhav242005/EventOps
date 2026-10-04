@@ -79,11 +79,18 @@ def test_event_creation_and_member_role_controls():
 
 def test_organizer_registration_is_open():
     with fresh_client() as c:
-        payload = {"name": "New organizer", "passcode": "safe-passcode", "role": "organizer"}
+        payload = {"name": "New organizer", "passcode": "safe-passcode", "role": "organizer",
+                   "organization_name": "New Demo Organization"}
         created = c.post("/api/register", json=payload)
         assert created.status_code == 200 and created.json()["role"] == "organizer"
         logged_in = c.post("/api/login", json={"name": payload["name"], "passcode": payload["passcode"]})
         assert logged_in.status_code == 200 and logged_in.json()["role"] == "organizer"
+        headers = {"Authorization": f"Bearer {logged_in.json()['token']}"}
+        assert c.get("/api/myevents", headers=headers).json() == []
+        first = c.post("/api/events?event_id=0", headers=headers,
+                       json={"name": "Launch Event", "date_time": "2027-01-01T18:00:00"})
+        assert first.status_code == 201
+        assert [e["id"] for e in c.get("/api/myevents", headers=headers).json()] == [first.json()["event_id"]]
 
 
 def test_event_qr_registration_records_door_attendance():
@@ -125,6 +132,25 @@ def test_schedule_and_alert_list_pagination_filters():
         alerts = c.get("/api/alerts?event_id=1&limit=1&offset=0", headers=headers)
         assert alerts.status_code == 200
         assert alerts.json()["limit"] == 1 and len(alerts.json()["items"]) <= 1
+
+
+def test_demo_content_seeds_existing_event_idempotently():
+    with fresh_client():
+        seed_demo()
+        conn = get_conn()
+        try:
+            before = tuple(conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE event_id=1"
+            ).fetchone()[0] for table in ("messages", "alerts", "outbound_log", "call_log", "vendor_candidates"))
+            assert before[0] >= 4 and before[1] >= 2 and before[2] >= 2
+            assert before[3] >= 1 and before[4] >= 2
+            seed_demo()
+            after = tuple(conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE event_id=1"
+            ).fetchone()[0] for table in ("messages", "alerts", "outbound_log", "call_log", "vendor_candidates"))
+            assert after == before
+        finally:
+            conn.close()
 
 
 def test_approve_edges():

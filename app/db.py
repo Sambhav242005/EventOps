@@ -146,6 +146,82 @@ def _resolve_team_id(team_ids: list[int], ref):
         return None
 
 
+def _seed_demo_content(conn: sqlite3.Connection, event_id: int, content: dict) -> None:
+    """Add illustrative dashboard activity once, including to existing demo DBs."""
+    import json
+    from datetime import datetime, timedelta
+
+    for message in content.get("messages", []):
+        exists = conn.execute(
+            "SELECT 1 FROM messages WHERE event_id=? AND sender=? AND text=? AND channel=?",
+            (event_id, message["sender"], message["text"], message.get("channel", "room")),
+        ).fetchone()
+        if not exists:
+            conn.execute(
+                "INSERT INTO messages(event_id,sender,text,channel,created_at) VALUES(?,?,?,?,?)",
+                (event_id, message["sender"], message["text"], message.get("channel", "room"), now_iso()),
+            )
+
+    for alert in content.get("alerts", []):
+        exists = conn.execute(
+            "SELECT 1 FROM alerts WHERE event_id=? AND kind=? AND text=?",
+            (event_id, alert["kind"], alert["text"]),
+        ).fetchone()
+        if not exists:
+            conn.execute(
+                "INSERT INTO alerts(event_id,kind,severity,text,evidence_json,created_at) "
+                "VALUES(?,?,?,?,?,?)",
+                (event_id, alert["kind"], alert.get("severity", "info"), alert["text"],
+                 "{}", now_iso()),
+            )
+
+    for item in content.get("outbound", []):
+        key = f"demo:{item['key']}"
+        exists = conn.execute(
+            "SELECT 1 FROM outbound_log WHERE event_id=? AND idempotency_key=?",
+            (event_id, key),
+        ).fetchone()
+        if not exists:
+            send_at = ""
+            if item.get("send_in_hours"):
+                send_at = (datetime.now() + timedelta(hours=float(item["send_in_hours"]))).strftime(
+                    "%Y-%m-%dT%H:%M:%S%z")
+            conn.execute(
+                "INSERT INTO outbound_log(event_id,channel,recipient,body,status,approved_by,"
+                "idempotency_key,send_at,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                (event_id, item["channel"], item["recipient"], item["body"], item["status"],
+                 "Demo organizer" if item["status"] == "approved" else "", key, send_at, now_iso()),
+            )
+
+    for call in content.get("calls", []):
+        key = f"demo:{call['key']}"
+        exists = conn.execute(
+            "SELECT 1 FROM call_log WHERE event_id=? AND conversation_id=?",
+            (event_id, key),
+        ).fetchone()
+        if not exists:
+            conn.execute(
+                "INSERT INTO call_log(event_id,vendor_id,conversation_id,status,summary_json,created_at) "
+                "VALUES(?,?,?,?,?,?)",
+                (event_id, int(call.get("vendor_id", 0)), key, call.get("status", "pending"),
+                 json.dumps(call.get("summary", {})), now_iso()),
+            )
+
+    for candidate in content.get("candidates", []):
+        exists = conn.execute(
+            "SELECT 1 FROM vendor_candidates WHERE event_id=? AND category=? AND name=?",
+            (event_id, candidate["category"], candidate["name"]),
+        ).fetchone()
+        if not exists:
+            conn.execute(
+                "INSERT INTO vendor_candidates(event_id,category,name,phone,price_hint,distance_km,"
+                "availability_note,confidence,status) VALUES(?,?,?,?,?,?,?,?,?)",
+                (event_id, candidate["category"], candidate["name"], candidate.get("phone", ""),
+                 candidate.get("price_hint", 0), candidate.get("distance_km", 0),
+                 candidate.get("availability_note", ""), candidate.get("confidence", 0), "new"),
+            )
+
+
 def seed_demo(db_path: str = DB_PATH) -> int:
     """Seed demo content from seed.json (override path via SEED_FILE). Idempotent."""
     import json
@@ -154,6 +230,7 @@ def seed_demo(db_path: str = DB_PATH) -> int:
     seed = json.loads(seed_file().read_text())
     # orgs/teams first (idempotent: reuse existing rows by order)
     org_rows = conn.execute("SELECT id FROM organizations ORDER BY id").fetchall()
+    had_organizations = bool(org_rows)
     org_ids: list[int] = [int(r["id"]) for r in org_rows]
     if not org_ids:
         for o in seed.get("organizations", [{"name": "Demo Org"}]):
@@ -164,7 +241,7 @@ def seed_demo(db_path: str = DB_PATH) -> int:
         conn.commit()
     team_rows = conn.execute("SELECT id FROM teams ORDER BY id").fetchall()
     team_ids: list[int] = [int(r["id"]) for r in team_rows]
-    if not team_ids:
+    if not team_ids and not had_organizations:
         for t in seed.get("teams", []):
             t_org = _resolve_org_id(org_ids, t.get("org", 0))
             cur_t = conn.execute(
@@ -172,10 +249,22 @@ def seed_demo(db_path: str = DB_PATH) -> int:
                 (t_org, t.get("name", "Team"), now_iso()))
             team_ids.append(int(cur_t.lastrowid))
         conn.commit()
-    row = conn.execute("SELECT id FROM events LIMIT 1").fetchone()
+    row = conn.execute("SELECT id FROM events WHERE name=? ORDER BY id LIMIT 1",
+                       (seed["event"]["name"],)).fetchone()
     if row:
+        event_id = int(row["id"])
+        _seed_demo_content(conn, event_id, seed.get("demo_content", {}))
+        conn.commit()
         conn.close()
-        return int(row["id"])
+        return event_id
+    other_event = conn.execute("SELECT id FROM events ORDER BY id LIMIT 1").fetchone()
+    if other_event:
+        conn.close()
+        return int(other_event["id"])
+    if had_organizations:
+        # Do not inject the global sample event into a newly created, empty org.
+        conn.close()
+        return 0
     ev = seed["event"]
     hh, mm = (ev.get("time", "18:00") + ":00").split(":")[:2]
     dt = (datetime.now() + timedelta(days=int(ev.get("days_ahead", 1)))).replace(
@@ -227,6 +316,7 @@ def seed_demo(db_path: str = DB_PATH) -> int:
         "INSERT INTO messages(event_id,sender,text,channel,created_at) VALUES(?,?,?,?,?)",
         (eid, "system", seed.get("welcome", "Welcome."), "room", now_iso()),
     )
+    _seed_demo_content(conn, eid, seed.get("demo_content", {}))
     conn.commit()
     conn.close()
     return eid

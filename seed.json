@@ -28,5 +28,27 @@
     {"title": "Print QR check-in sheets", "owner": "Asha", "due": "today", "status": "open"}
   ],
   "attendees": {"name_pattern": "Guest %02d", "count": 5, "token_pattern": "QR-%04d", "phones": []},
-  "welcome": "Welcome to the event room. Tag @agent to ask for help."
+  "welcome": "Welcome to the event room. Tag @agent to ask for help.",
+  "demo_content": {
+    "messages": [
+      {"sender": "Asha", "channel": "room", "text": "Team check-in: venue and entry QR are ready. Please confirm your assigned tasks here."},
+      {"sender": "Ravi", "channel": "room", "text": "Attendee list is loaded. I’ll watch the entrance and update check-ins."},
+      {"sender": "Asha", "channel": "vendors", "text": "Caterer confirmed 500 vegetarian plates. Final headcount check is due today."}
+    ],
+    "alerts": [
+      {"kind": "vendor_watch", "severity": "high", "text": "Caterer final headcount is due today. Confirm the 500-plate order before the cutoff."},
+      {"kind": "weather", "severity": "info", "text": "Demo alert: check the local forecast again before doors open."}
+    ],
+    "outbound": [
+      {"key": "team-opening-brief", "channel": "whatsapp", "recipient": "audience:team", "body": "Event-day brief: doors open at 5:30 PM. Keep the entrance QR visible and report issues in the team room.", "status": "pending"},
+      {"key": "volunteer-reminder", "channel": "whatsapp", "recipient": "audience:team", "body": "Reminder: please arrive 30 minutes before doors open and check in with the organizer.", "status": "approved", "send_in_hours": 4}
+    ],
+    "calls": [
+      {"key": "caterer-confirmation", "vendor_id": 1, "status": "pending", "summary": {"purpose": "Confirm final headcount and delivery time", "language": "en"}}
+    ],
+    "candidates": [
+      {"category": "catering", "name": "Indore Fresh Feast Backup", "phone": "+919100000011", "price_hint": 76000, "distance_km": 5.2, "availability_note": "Demo backup option — verify availability", "confidence": 0.72},
+      {"category": "tent", "name": "Malwa Tent & Decor Backup", "phone": "+919100000012", "price_hint": 28500, "distance_km": 7.1, "availability_note": "Demo backup option — verify availability", "confidence": 0.68}
+    ]
+  }
 }
