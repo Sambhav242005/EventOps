@@ -85,6 +85,63 @@ def triage(failures: list[dict[str, Any]], event_iso: str) -> list[dict[str, Any
     return steps
 
 
+# ---- Factual lookup: answer from structured data before calling the LLM ----
+CATEGORY_WORDS = {
+    "catering": ("cater", "food", "menu", "meal", "lunch", "dinner", "plates"),
+    "tent": ("tent", "shamiana", "cover", "rain", "seating"),
+    "sound": ("sound", "dj", "mic", "speaker", "audio", "music"),
+    "venue": ("venue", "hall", "ground", "where"),
+}
+
+
+def lookup_facts(request: str, event_id: int = 1) -> str | None:
+    """Direct DB answer for who/what/when/price/status/phone/menu questions.
+
+    Returns None when the request isn't factual (LLM handles it instead).
+    Never invents: reports only stored fields, flags what's missing.
+    """
+    import re
+    from .db import get_conn
+    r = request.lower()
+    if not re.search(r"\?|\b(what|when|where|who|how much|price|cost|menu|status|phone|number|contact)\b", r):
+        return None
+    conn = get_conn()
+    try:
+        ev = conn.execute("SELECT * FROM events WHERE id=?", (event_id,)).fetchone()
+        vendors = [dict(x) for x in conn.execute(
+            "SELECT * FROM vendors WHERE event_id=?", (event_id,)).fetchall()]
+    finally:
+        conn.close()
+    if not ev:
+        return None
+    # which vendor(s)? name match or category words
+    hits = [v for v in vendors if v["name"].lower() in r]
+    if not hits:
+        for cat, words in CATEGORY_WORDS.items():
+            if any(w in r for w in words):
+                hits = [v for v in vendors if v["category"] == cat]
+                break
+    if not hits and re.search(r"\bvendor", r):
+        hits = vendors
+    if not hits:
+        return None
+    lines = []
+    for v in hits:
+        bits = [f"{v['name']} ({v['category']}) is {v['status']}"]
+        if v["quote"]:
+            bits.append(f"quote ₹{v['quote']:g}")
+        if v["phone"]:
+            bits.append(f"contact {v['phone']}")
+        if v["conditions"]:
+            bits.append(v["conditions"])
+        else:
+            bits.append("no menu/conditions on file yet")
+        lines.append(" — ".join(bits) + ".")
+    if re.search(r"\bwhen\b", r) and ev["date_time"]:
+        lines.append(f"Event is on {ev['date_time']} at {ev['venue']}.")
+    return " ".join(lines) or None
+
+
 # ---- Ranking ----
 def rank_candidates(candidates: list[dict[str, Any]], budget: float,
                     hours_left: float) -> list[dict[str, Any]]:

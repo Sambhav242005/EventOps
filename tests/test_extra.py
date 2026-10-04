@@ -286,3 +286,23 @@ def test_channel_routing_and_validation():
     rows = conn.execute("SELECT channel FROM messages WHERE sender IN ('vendor','x')").fetchall()
     conn.close()
     assert [r["channel"] for r in rows] == ["vendors", "room"]
+
+
+def test_lookup_facts_menu_price_status():
+    from app.db import get_conn, init_db, seed_demo
+    from app.decision import lookup_facts
+    import pathlib
+    from app import db as _db
+    p = pathlib.Path(_db.DB_PATH)
+    if p.exists():
+        p.unlink()
+    init_db()
+    seed_demo()
+    from tests.helpers import first_vendor
+    v = first_vendor()
+    menu = lookup_facts(f"what is today's menu from {v['name']}?")
+    assert menu and v["name"] in menu and "veg" in menu
+    assert lookup_facts("do something vague") is None
+    assert lookup_facts("research backup caterers") is None
+    price = lookup_facts("how much is the catering quote?")
+    assert price and "80000" in price.replace(",", "")

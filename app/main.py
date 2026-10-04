@@ -21,7 +21,7 @@ _load_env()
 from .auth import hash_code, issue_token, verify_token
 from .calls import build_call_brief, extract_call_fields, get_calls
 from .db import get_conn, init_db, now_iso, seed_demo
-from .decision import approval_rule, draft_notice, risk_level
+from .decision import approval_rule, draft_notice, lookup_facts, risk_level
 from .llm import get_llm, parse_json_lenient
 from .messaging import _opted_out, extract_vendor_fields, get_messaging, norm_wa
 from .ops import apply_photo_names, check_in_token, export_csv, table_rows
@@ -63,10 +63,13 @@ def event_state_summary(event_id: int = 1) -> str:
     conn = get_conn()
     try:
         vendors = conn.execute(
-            "SELECT name,category,status,quote FROM vendors WHERE event_id=?", (event_id,)).fetchall()
+            "SELECT name,category,status,quote,phone,conditions FROM vendors WHERE event_id=?", (event_id,)).fetchall()
     finally:
         conn.close()
-    v = ", ".join(f"{x['name']}({x['category']}:{x['status']})" for x in vendors)
+    v = ", ".join(
+        f"{x['name']}({x['category']}:{x['status']}"
+        f"{', ₹'+str(x['quote']) if x['quote'] else ''}"
+        f"{', '+x['conditions'] if x['conditions'] else ''})" for x in vendors)
     return f"{ev['name']} @ {ev['venue']} on {ev['date_time']}; vendors: {v or 'none'}"
 
 
@@ -174,29 +177,36 @@ async def agent_worker() -> None:
     llm = get_llm()
     while True:
         job = await agent_queue.get()
-        try:
-            action = await llm.complete_action(job["context"], job["request"],
-                                               event_state_summary())
-        except Exception as e:
-            log.warning("agent error: %s", e)
-            from .models import AgentAction
-            action = AgentAction(type="answer", text="Sorry — the agent hit an error. Try again.")
-        risk = risk_level(action.type, action.args, action.text)
-        rule = approval_rule(risk)
-        # Persist pending approvals for medium/high; low auto-runs (answer/research/export preview).
-        pending_id = None
-        if action.type == "draft_message" and not rule["auto"]:
-            aud = str(action.args.get("audience", "team"))
-            body = str(action.args.get("body", action.text))[:1500]
-            count = audience_count(aud)
-            pending_id = queue_outbound("mock", aud, body, action.args, job["sender"])
-            action.text += f" [pending #{pending_id}: {aud} x{count} — needs approval]"
-        elif action.type == "call_vendor" and not rule["auto"]:
-            pending_id = queue_call(action.args, job["sender"])
-            action.text += f" [call pending #{pending_id} — organizer approval needed]"
-        elif action.type == "research":
-            cat = str(action.args.get("category", "catering"))
-            asyncio.create_task(candidate_search(1, cat))  # background, never auto-contacts
+        # Factual fast-path: menu/price/status/phone questions are answered
+        # straight from the vendor table — no LLM round-trip, no guessing.
+        facts = lookup_facts(job["request"])
+        if facts:
+            from .models import AgentAction as _AA
+            action = _AA(type="answer", text=facts, args={"source": "vendor_table"})
+            risk, pending_id = "low", None
+        else:
+            try:
+                action = await llm.complete_action(job["context"], job["request"],
+                                                   event_state_summary())
+            except Exception as e:
+                log.warning("agent error: %s", e)
+                from .models import AgentAction
+                action = AgentAction(type="answer", text="Sorry — the agent hit an error. Try again.")
+            risk = risk_level(action.type, action.args, action.text)
+            rule = approval_rule(risk)
+            pending_id = None
+            if action.type == "draft_message" and not rule["auto"]:
+                aud = str(action.args.get("audience", "team"))
+                body = str(action.args.get("body", action.text))[:1500]
+                count = audience_count(aud)
+                pending_id = queue_outbound("mock", aud, body, action.args, job["sender"])
+                action.text += f" [pending #{pending_id}: {aud} x{count} — needs approval]"
+            elif action.type == "call_vendor" and not rule["auto"]:
+                pending_id = queue_call(action.args, job["sender"])
+                action.text += f" [call pending #{pending_id} — organizer approval needed]"
+            elif action.type == "research":
+                cat = str(action.args.get("category", "catering"))
+                asyncio.create_task(candidate_search(1, cat))  # background, never auto-contacts
         conn = get_conn()
         try:
             conn.execute("INSERT INTO decision_log(event_id,kind,input_json,output_json,rule_fired,created_at)"
