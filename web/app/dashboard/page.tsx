@@ -154,6 +154,7 @@ export default function Room() {
   const [unread, setUnread] = useState<Record<string, number>>({});
   const channelRef = useRef("room");
   const [data, setData] = useState<EventData | null>(null);
+  const [eventLoadError, setEventLoadError] = useState("");
   const [chatError, setChatError] = useState("");
   const [wsStatus, setWsStatus] = useState<"connecting" | "connected" | "disconnected">("connecting");
   const [siteOrigin, setSiteOrigin] = useState("");
@@ -273,10 +274,26 @@ export default function Room() {
     [push]
   );
 
+  async function retryInitialEventLoad() {
+    if (!token) return;
+    setEventLoadError("");
+    try {
+      await loadEventData(token, eventIdRef.current);
+    } catch (e) {
+      if (e instanceof Error && e.message === "login required") {
+        clearSession();
+        router.replace("/login");
+        return;
+      }
+      setEventLoadError(e instanceof Error ? e.message : "Could not reach the event service.");
+    }
+  }
+
   async function switchEvent(nextId: number) {
     const id = Number(nextId);
     if (!Number.isFinite(id) || id === eventIdRef.current) return;
     setSwitchError("");
+    setEventLoadError("");
     setSwitchTarget(id);
     setSwitching(true);
     try {
@@ -342,8 +359,13 @@ export default function Room() {
       connect(s.token, eid);
       try {
         await loadEventData(s.token, eid);
-      } catch {
-        router.replace("/login");
+      } catch (e) {
+        if (e instanceof Error && e.message === "login required") {
+          clearSession();
+          router.replace("/login");
+          return;
+        }
+        setEventLoadError(e instanceof Error ? e.message : "Could not reach the event service.");
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -540,6 +562,13 @@ export default function Room() {
         <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
           <span>{switchError} Your current event is still open.</span>
           <Button size="sm" variant="secondary" onClick={() => switchTarget && switchEvent(switchTarget)}>Retry event load</Button>
+        </div>
+      )}
+
+      {eventLoadError && (
+        <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+          <span>Couldn’t load this event: {eventLoadError}. Your login is still active.</span>
+          <Button size="sm" variant="secondary" onClick={retryInitialEventLoad}>Retry</Button>
         </div>
       )}
 
