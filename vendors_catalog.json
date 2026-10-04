@@ -1,0 +1,7 @@
+[
+  {"category": "catering", "name": "Indore Feast Co.", "phone": "+919100000011", "price_hint": 60000, "distance_km": 3.2, "availability_note": "Available, 600 plates veg"},
+  {"category": "catering", "name": "Malwa Meals", "phone": "+919100000012", "price_hint": 55000, "distance_km": 5.1, "availability_note": "Available evening slot"},
+  {"category": "catering", "name": "Sarafa Express", "phone": "+919100000013", "price_hint": 45000, "distance_km": 8.4, "availability_note": "Only 100 plates (partial)"},
+  {"category": "tent", "name": "City Tent House 2", "phone": "+919100000021", "price_hint": 28000, "distance_km": 4.0, "availability_note": "Waterproof tents available"},
+  {"category": "sound", "name": "Bass Wala Sound", "phone": "+919100000031", "price_hint": 12000, "distance_km": 2.2, "availability_note": "Available with operator"}
+]
