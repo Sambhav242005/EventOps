@@ -32,6 +32,12 @@ TEMPLATE = os.environ.get("WHATSAPP_TEMPLATE_EVENT_INQUIRY",
                            "Your appointment is coming up on {{1}} at {{2}}")
 
 
+def norm_wa(addr: str) -> str:
+    """Twilio sends From='whatsapp:+91…'; our DB stores plain E.164."""
+    a = (addr or "").strip()
+    return a.split("whatsapp:", 1)[-1] if "whatsapp:" in a else a
+
+
 class MessagingAdapter:
     channel = "mock"
 
@@ -96,8 +102,9 @@ class MockAdapter(MessagingAdapter):
 
     async def send(self, to: str, body: str, idempotency_key: str = "") -> dict:
         key = idempotency_key or str(uuid.uuid4())
-        if key in _sent_keys:  # idempotent replay
+        if key in _sent_keys:
             return {**_sent_keys[key], "dedupe": True}
+        to = norm_wa(to)
         if to in _opted_out:
             res = {"ok": False, "status": "opted_out", "to": to, "key": key}
         else:
@@ -144,6 +151,9 @@ class WhatsAppAdapter(MessagingAdapter):
     def __init__(self):
         self.sid = os.environ.get("TWILIO_ACCOUNT_SID", "")
         self.token = os.environ.get("TWILIO_AUTH_TOKEN", "")
+        # API-key auth preferred when set (username=key SID, password=secret)
+        self.auth_user = os.environ.get("TWILIO_API_KEY_SID", "") or self.sid
+        self.auth_pass = os.environ.get("TWILIO_API_KEY_SECRET", "") or self.token
         self.from_ = os.environ.get("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886")
 
     async def send(self, to: str, body: str, idempotency_key: str = "") -> dict:
@@ -157,8 +167,7 @@ class WhatsAppAdapter(MessagingAdapter):
         use_template = not self.in_window(to)
         payload_body = (f"[template: event inquiry] {TEMPLATE} -- {body[:300]}"
                         if use_template else body[:1500])
-        if not self.sid:  # no creds -> mock-send but keep template/window logic honest
-            res = {"ok": True, "status": "sent‑mock", "to": to, "channel": "whatsapp",
+        if not self.sid:  # no creds -> mock-send but keep template/window logic honest            res = {"ok": True, "status": "sent‑mock", "to": to, "channel": "whatsapp",
                    "used_template": use_template, "body": payload_body[:500], "key": key}
             _sent_keys[key] = res
             return res
@@ -166,7 +175,7 @@ class WhatsAppAdapter(MessagingAdapter):
             async with httpx.AsyncClient(timeout=20) as c:
                 r = await c.post(
                     f"https://api.twilio.com/2010-04-01/Accounts/{self.sid}/Messages.json",
-                    auth=(self.sid, self.token),
+                    auth=(self.auth_user, self.auth_pass),
                     data={"From": self.from_, "To": f"whatsapp:{to}", "Body": payload_body})
                 r.raise_for_status()
                 res = {"ok": True, "status": "queued", "to": to, "channel": "whatsapp",
