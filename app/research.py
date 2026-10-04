@@ -33,10 +33,13 @@ def set_notifier(fn) -> None:
     _notifier = fn
 
 
-async def notify(text: str) -> None:
+async def notify(text: str, channel: str = "room") -> None:
     if _notifier:
         try:
-            await _notifier(text)
+            try:
+                await _notifier(text, channel)
+            except TypeError:
+                await _notifier(text)  # legacy single-arg hooks
         except Exception as e:
             log.warning("notify failed: %s", e)
 
@@ -211,10 +214,10 @@ async def research_loop(event_id: int = 1, interval_s: int = 300) -> None:
         try:
             w = await weather_check(event_id)
             if w.get("alerted"):
-                await notify(f"🌧 {w.get('risk_pct')}% rain risk and outdoor venue — consider cover.")
+                await notify(f"🌧 {w.get('risk_pct')}% rain risk and outdoor venue — consider cover.", "alerts")
             v = await vendor_watch(event_id)
             if v.get("flagged"):
-                await notify(f"⚠️ Vendors need attention: {', '.join(v['flagged'][:3])}.")
+                await notify(f"⚠️ Vendors need attention: {', '.join(v['flagged'][:3])}.", "alerts")
             await threshold_checks(event_id)
         except Exception as e:
             log.warning("research loop error: %s", e)

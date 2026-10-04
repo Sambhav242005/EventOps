@@ -43,7 +43,8 @@ CREATE TABLE IF NOT EXISTS attendees(
   checked_in INTEGER DEFAULT 0, checked_in_at TEXT DEFAULT '', source TEXT DEFAULT 'manual');
 CREATE TABLE IF NOT EXISTS messages(
   id INTEGER PRIMARY KEY AUTOINCREMENT, event_id INTEGER NOT NULL,
-  sender TEXT NOT NULL, text TEXT NOT NULL, created_at TEXT NOT NULL);
+  sender TEXT NOT NULL, text TEXT NOT NULL, channel TEXT DEFAULT 'room',
+  created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS outbound_log(
   id INTEGER PRIMARY KEY AUTOINCREMENT, event_id INTEGER NOT NULL,
   channel TEXT NOT NULL, recipient TEXT DEFAULT '', body TEXT DEFAULT '',
@@ -84,6 +85,9 @@ def init_db(db_path: str = DB_PATH) -> None:
         conn.execute("ALTER TABLE members ADD COLUMN passcode TEXT NOT NULL DEFAULT ''")
     if "phone" not in mcols:
         conn.execute("ALTER TABLE members ADD COLUMN phone TEXT NOT NULL DEFAULT ''")
+    msgcols = [r["name"] for r in conn.execute("PRAGMA table_info(messages)").fetchall()]
+    if "channel" not in msgcols:
+        conn.execute("ALTER TABLE messages ADD COLUMN channel TEXT NOT NULL DEFAULT 'room'")
     ocols = [r["name"] for r in conn.execute("PRAGMA table_info(outbound_log)").fetchall()]
     if "ext_sid" not in ocols:  # provider message SID (Twilio) for status callbacks
         conn.execute("ALTER TABLE outbound_log ADD COLUMN ext_sid TEXT NOT NULL DEFAULT ''")
@@ -156,8 +160,8 @@ def seed_demo(db_path: str = DB_PATH) -> int:
              att["token_pattern"] % i),
         )
     conn.execute(
-        "INSERT INTO messages(event_id,sender,text,created_at) VALUES(?,?,?,?)",
-        (eid, "system", seed.get("welcome", "Welcome."), now_iso()),
+        "INSERT INTO messages(event_id,sender,text,channel,created_at) VALUES(?,?,?,?,?)",
+        (eid, "system", seed.get("welcome", "Welcome."), "room", now_iso()),
     )
     conn.commit()
     conn.close()

@@ -14,7 +14,22 @@ const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const wsURL = (token: string) =>
   `${API.replace(/^http/, "ws")}/ws?token=${encodeURIComponent(token)}`;
 
-type Msg = { sender: string; text: string };
+type Msg = { sender: string; text: string; channel?: string };
+
+const CHANNELS = [
+  { id: "room", label: "general", hint: "Team chat + @agent" },
+  { id: "vendors", label: "vendors", hint: "Vendor calls, replies, status" },
+  { id: "alerts", label: "alerts", hint: "Weather, watch, countdown" },
+] as const;
+
+const AGENT_CMDS = [
+  "@agent research backup caterers",
+  "@agent draft a message to the team",
+  "@agent draft a message to guests",
+  "@agent call the caterer",
+  "@agent export csv",
+  "@agent what needs attention?",
+];
 
 type OutboundItem = {
   id: number;
@@ -45,6 +60,7 @@ type Attendee = {
 
 type EventData = {
   attendance: { checked: number; total: number };
+  event?: { name?: string; venue?: string; date_time?: string } | null;
   outbound?: OutboundItem[];
   candidates?: Candidate[];
   alerts?: AlertItem[];
@@ -67,13 +83,38 @@ function fileToBase64(file: File): Promise<string> {
     r.readAsDataURL(file);
   });
 }
-
 function Empty({ text }: { text: string }) {
   return (
     <p className="rounded-xl bg-muted/60 px-3 py-4 text-center text-sm text-muted-foreground">
       {text}
     </p>
   );
+}
+
+const AUD_LABEL: Record<string, string> = {
+  team: "Team",
+  guests: "Guests",
+  all: "Everyone",
+  everyone: "Everyone",
+  "team+guests": "Everyone",
+};
+
+function audLabel(recipient: string): string {
+  const m = recipient.match(/^audience:(.+)$/);
+  if (m) return AUD_LABEL[m[1]] ?? m[1];
+  if (recipient.startsWith("to:")) return "Direct";
+  return recipient || "—";
+}
+
+function relTime(iso?: string): string {
+  if (!iso) return "";
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return iso;
+  const mins = Math.round((t - Date.now()) / 60000);
+  if (mins <= 0) return "due now";
+  if (mins < 60) return `in ${mins} min`;
+  const h = Math.floor(mins / 60);
+  return `in ${h}h ${mins % 60}m`;
 }
 
 function StatusNote({ text }: { text: string }) {
@@ -99,6 +140,9 @@ export default function Room() {
   const [role, setRole] = useState("");
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [text, setText] = useState("");
+  const [channel, setChannel] = useState<string>("room");
+  const [unread, setUnread] = useState<Record<string, number>>({});
+  const channelRef = useRef("room");
   const [data, setData] = useState<EventData | null>(null);
   const [door, setDoor] = useState("");
   const [qr, setQr] = useState("");
@@ -165,8 +209,10 @@ export default function Room() {
     const sock = new WebSocket(wsURL(tok));
     ws.current = sock;
     sock.onmessage = (e: MessageEvent) => {
-      const m = JSON.parse(String(e.data)) as { sender: string; text: string };
-      push({ sender: m.sender, text: m.text });
+      const m = JSON.parse(String(e.data)) as { sender: string; text: string; channel?: string };
+      const ch = m.channel ?? "room";
+      push({ sender: m.sender, text: m.text, channel: ch });
+      if (ch !== channelRef.current) setUnread((u) => ({ ...u, [ch]: (u[ch] ?? 0) + 1 }));
       refresh();
     };
   }
@@ -204,8 +250,24 @@ export default function Room() {
 
   function send() {
     if (!text.trim() || ws.current?.readyState !== 1) return;
-    ws.current.send(JSON.stringify({ text }));
+    ws.current.send(JSON.stringify({ text, channel }));
     setText("");
+    setUnread((u) => ({ ...u, [channel]: 0 }));
+  }
+
+  function switchChannel(id: string) {
+    setChannel(id);
+    channelRef.current = id;
+    setUnread((u) => ({ ...u, [id]: 0 }));
+  }
+
+  const mentionMatch = text.match(/@[\w-]*$/);
+  const suggestions = mentionMatch
+    ? AGENT_CMDS.filter((c) => c.toLowerCase().startsWith(mentionMatch[0].toLowerCase()))
+    : [];
+
+  function applySuggestion(cmd: string) {
+    setText(text.replace(/@[\w-]*$/, cmd));
   }
 
   async function checkin() {
@@ -376,44 +438,131 @@ export default function Room() {
         </div>
       </header>
 
+      {data?.event && (
+        <div className="flex flex-wrap items-center gap-2 rounded-2xl border bg-card px-4 py-2.5 text-sm">
+          <span className="font-display font-bold">{data.event.name}</span>
+          {data.event.venue && <span className="text-muted-foreground">· {data.event.venue}</span>}
+          {data.event.date_time && (
+            <Badge variant="muted">{new Date(data.event.date_time).toLocaleString()}</Badge>
+          )}
+        </div>
+      )}
+
       {!token ? (
         <Empty text="Opening your dashboard…" />
       ) : (
         <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_340px]">
-          <Card className="min-w-0">
-            <CardHeader>
-              <CardTitle>Team room</CardTitle>
-              <p className="text-sm text-muted-foreground">Tag @agent in a message to ask for help.</p>
-            </CardHeader>
-            <CardContent>
-              <div
-                ref={logRef}
-                aria-live="polite"
-                className="chat-scroll flex h-[46vh] min-h-[240px] flex-col gap-2 overflow-y-auto"
-              >
-                {msgs.length === 0 && (
-                  <Empty text="No messages yet. Say hello — the team and the agent will reply here." />
-                )}
-                {msgs.map((m, i) => (
-                  <div key={i} className={cn("rounded-2xl px-3 py-2 text-sm", senderBubble(m.sender))}>
-                    <span className="font-semibold">{m.sender}: </span>
-                    {m.text}
+          <Card className="min-w-0 overflow-hidden">
+            <div className="flex min-h-[46vh]">
+              <nav aria-label="Channels" className="w-36 shrink-0 space-y-1 border-r bg-muted/40 p-2 sm:w-44">
+                {CHANNELS.map((c) => {
+                  const active = channel === c.id;
+                  const n = unread[c.id] ?? 0;
+                  return (
+                    <button
+                      key={c.id}
+                      onClick={() => switchChannel(c.id)}
+                      aria-current={active}
+                      className={cn(
+                        "flex w-full items-center gap-1.5 rounded-xl px-2.5 py-2 text-left text-sm transition-colors",
+                        active ? "bg-card font-semibold shadow-sm" : "text-muted-foreground hover:bg-card/60"
+                      )}
+                    >
+                      <span aria-hidden="true" className="text-muted-foreground">
+                        #
+                      </span>
+                      <span className="min-w-0 flex-1 truncate">{c.label}</span>
+                      {n > 0 && (
+                        <span className="grid h-5 min-w-[20px] place-items-center rounded-full bg-primary px-1.5 text-[11px] font-bold text-primary-foreground">
+                          {n}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+                <p className="px-2.5 pt-1 text-xs text-muted-foreground">
+                  {CHANNELS.find((c) => c.id === channel)?.hint}
+                </p>
+              </nav>
+              <div className="flex min-w-0 flex-1 flex-col">
+                <div className="border-b px-4 py-2.5">
+                  <p className="font-display text-base font-bold">
+                    <span aria-hidden="true" className="text-muted-foreground">
+                      #{" "}
+                    </span>
+                    {CHANNELS.find((c) => c.id === channel)?.label}
+                  </p>
+                </div>
+                <div
+                  ref={logRef}
+                  aria-live="polite"
+                  className="chat-scroll flex max-h-[46vh] min-h-[240px] flex-1 flex-col gap-2 overflow-y-auto p-3"
+                >
+                  {msgs.filter((m) => (m.channel ?? "room") === channel).length === 0 && (
+                    <Empty
+                      text={
+                        channel === "room"
+                          ? "No messages yet. Say hello — or try @agent below."
+                          : channel === "vendors"
+                            ? "Vendor calls, replies, and status changes land here."
+                            : "Weather, vendor-watch, and countdown alerts land here."
+                      }
+                    />
+                  )}
+                  {msgs
+                    .filter((m) => (m.channel ?? "room") === channel)
+                    .map((m, i) => (
+                      <div
+                        key={i}
+                        className={cn(
+                          "min-w-0 break-words rounded-2xl px-3 py-2 text-sm",
+                          senderBubble(m.sender)
+                        )}
+                      >
+                        <span className="font-semibold">{m.sender}: </span>
+                        {m.text}
+                      </div>
+                    ))}
+                </div>
+                <div className="relative border-t p-3">
+                  {suggestions.length > 0 && (
+                    <div
+                      role="listbox"
+                      aria-label="Agent command suggestions"
+                      className="absolute inset-x-3 bottom-full mb-1 overflow-hidden rounded-2xl border bg-card shadow-lg"
+                    >
+                      {suggestions.map((s) => (
+                        <button
+                          key={s}
+                          role="option"
+                          aria-selected="false"
+                          onClick={() => applySuggestion(s)}
+                          className="block w-full truncate px-3 py-2 text-left font-mono text-sm hover:bg-muted"
+                        >
+                          {s}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  <div className="flex gap-2">
+                    <Input
+                      value={text}
+                      onChange={(e) => setText(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") send();
+                        if (e.key === "Escape") setText(text.replace(/@[\w-]*$/, ""));
+                      }}
+                      placeholder={`Message #${CHANNELS.find((c) => c.id === channel)?.label}… type @ for agent commands`}
+                      aria-label="Chat message"
+                      className="min-w-0"
+                    />
+                    <Button onClick={send} disabled={!text.trim()} className="shrink-0">
+                      Send
+                    </Button>
                   </div>
-                ))}
+                </div>
               </div>
-              <div className="mt-3 flex gap-2">
-                <Input
-                  value={text}
-                  onChange={(e) => setText(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && send()}
-                  placeholder="Message… tag @agent for help"
-                  aria-label="Chat message"
-                />
-                <Button onClick={send} disabled={!text.trim()} className="shrink-0">
-                  Send
-                </Button>
-              </div>
-            </CardContent>
+            </div>
           </Card>
 
           <div className="min-w-0 space-y-4">
@@ -435,11 +584,11 @@ export default function Room() {
                   <div key={o.id} className="rounded-xl border p-2.5 text-sm">
                     <div className="flex items-center justify-between gap-2">
                       <p className="min-w-0 truncate font-semibold">
-                        #{o.id} <span className="font-normal">{o.recipient}</span>
+                        #{o.id} <span className="font-normal">{audLabel(o.recipient)}</span>
                       </p>
                       <Badge variant="warning">pending</Badge>
                     </div>
-                    <p className="mt-1 line-clamp-2 text-muted-foreground">{o.body}</p>
+                    <p className="mt-1 min-w-0 break-words text-muted-foreground">{o.body}</p>
                     <Button
                       size="sm"
                       className="mt-2 w-full"
@@ -476,12 +625,12 @@ export default function Room() {
                   <div key={o.id} className="rounded-xl border p-2.5 text-sm">
                     <div className="flex items-center justify-between gap-2">
                       <p className="font-semibold">
-                        #{o.id} <span className="font-normal">{o.recipient}</span>
+                        #{o.id} <span className="font-normal">{audLabel(o.recipient)}</span>
                       </p>
                       <Badge variant="default">scheduled</Badge>
                     </div>
                     {o.send_at && (
-                      <p className="mt-1 text-xs text-muted-foreground">{`Sends ${o.send_at}`}</p>
+                      <p className="mt-1 text-xs text-muted-foreground">{`Sends ${relTime(o.send_at)}`}</p>
                     )}
                     {editId === o.id ? (
                       <div className="mt-2 space-y-2">
@@ -587,9 +736,10 @@ export default function Room() {
 
             <Card>
               <CardHeader>
-                <CardTitle>Photo check-in</CardTitle>
+                <CardTitle>Door photo check-in</CardTitle>
                 <p className="text-sm text-muted-foreground">
-                  Upload a door photo to mark attendees present.
+                  Snap the paper sign-in sheet at the gate. AI reads the handwritten
+                  names — clear matches are marked present, unsure ones wait for you below.
                 </p>
               </CardHeader>
               <CardContent className="space-y-2">
@@ -615,7 +765,9 @@ export default function Room() {
                 )}
                 {photoReview.length > 0 && (
                   <div className="space-y-1">
-                    <p className="text-xs text-muted-foreground">Needs review:</p>
+                    <p className="text-xs text-muted-foreground">
+                      Needs a human — tap a name in the room list to confirm:
+                    </p>
                     {photoReview.map((r, i) => (
                       <p key={`${r.name}-${i}`} className="text-sm">
                         <Badge variant="warning">{r.confidence.toFixed(2)}</Badge> {r.name || "(unreadable)"}

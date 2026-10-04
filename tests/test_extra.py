@@ -266,3 +266,23 @@ def test_ollama_fallback_graceful_on_unreachable_host():
     assert action.type == "answer"
     assert "unreachable" in action.text.lower()
     # no exception raised -> graceful
+
+
+def test_channel_routing_and_validation():
+    from app.main import valid_channel, save_message
+    from app.db import get_conn, init_db, seed_demo
+    import pathlib
+    from app import db as _db
+    assert valid_channel("vendors") == "vendors"
+    assert valid_channel("evil") == "room"
+    p = pathlib.Path(_db.DB_PATH)
+    if p.exists():
+        p.unlink()
+    init_db()
+    seed_demo()
+    save_message(1, "vendor", "hi", "vendors")
+    save_message(1, "x", "hello", "evil-channel")
+    conn = get_conn()
+    rows = conn.execute("SELECT channel FROM messages WHERE sender IN ('vendor','x')").fetchall()
+    conn.close()
+    assert [r["channel"] for r in rows] == ["vendors", "room"]

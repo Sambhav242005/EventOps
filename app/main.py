@@ -81,11 +81,18 @@ def recent_room(event_id: int = 1, n: int = 20) -> str:
     return "\n".join(f"{r['sender']}: {r['text']}" for r in reversed(rows))
 
 
-def save_message(event_id: int, sender: str, text: str) -> None:
+CHANNELS = ("room", "vendors", "alerts")
+
+
+def valid_channel(c: str) -> str:
+    return c if c in CHANNELS else "room"
+
+
+def save_message(event_id: int, sender: str, text: str, channel: str = "room") -> None:
     conn = get_conn()
     try:
-        conn.execute("INSERT INTO messages(event_id,sender,text,created_at) VALUES(?,?,?,?)",
-                     (event_id, sender[:60], text[:2000], now_iso()))
+        conn.execute("INSERT INTO messages(event_id,sender,text,channel,created_at) VALUES(?,?,?,?,?)",
+                     (event_id, sender[:60], text[:2000], valid_channel(channel), now_iso()))
         conn.commit()
     finally:
         conn.close()
@@ -152,6 +159,7 @@ async def login(req: Request) -> JSONResponse:
 
 
 async def broadcast(payload: dict) -> None:
+    payload.setdefault("channel", "room")
     dead = []
     for ws in list(connected):
         try:
@@ -199,8 +207,10 @@ async def agent_worker() -> None:
         finally:
             conn.close()
         text = f"@agent [{action.type}|{risk}] {action.text}"
-        save_message(1, "agent", text)
-        await broadcast({"sender": "agent", "text": text, "action": action.model_dump(),
+        ch = "vendors" if action.type in ("call_vendor", "research") else "room"
+        save_message(1, "agent", text, ch)
+        await broadcast({"sender": "agent", "text": text, "channel": ch,
+                         "action": action.model_dump(),
                          "risk": risk, "pending_id": pending_id, "requester": job["sender"]})
         agent_queue.task_done()
 
@@ -281,9 +291,9 @@ async def startup() -> None:
     init_db()
     seed_demo()
 
-    async def _room_notify(text: str) -> None:
-        save_message(1, "agent", text)
-        await broadcast({"sender": "agent", "text": text})
+    async def _room_notify(text: str, channel: str = "room") -> None:
+        save_message(1, "agent", text, channel)
+        await broadcast({"sender": "agent", "text": text, "channel": channel})
 
     from .research import set_notifier
     set_notifier(_room_notify)
@@ -317,7 +327,7 @@ async def api_event(req: Request) -> JSONResponse:
         calls = [dict(r) for r in conn.execute(
             "SELECT * FROM call_log ORDER BY id DESC LIMIT 20").fetchall()]
         msgs = [dict(r) for r in conn.execute(
-            "SELECT sender,text,created_at FROM messages ORDER BY id DESC LIMIT 50").fetchall()]
+            "SELECT sender,text,channel,created_at FROM messages ORDER BY id DESC LIMIT 100").fetchall()]
         roster = [dict(r) for r in conn.execute(
             "SELECT id,name,phone,qr_token,checked_in,checked_in_at FROM attendees").fetchall()]
         counts = {t: conn.execute(f"SELECT COUNT(*) c FROM {t}").fetchone()["c"]
@@ -565,8 +575,8 @@ async def vendor_status(req: Request) -> JSONResponse:
         conn.commit()
     finally:
         conn.close()
-    save_message(1, "system", f"{v['name']} is now {status}.")
-    await broadcast({"sender": "system", "text": f"{v['name']} is now {status}."})
+    save_message(1, "system", f"{v['name']} is now {status}.", "vendors")
+    await broadcast({"sender": "system", "text": f"{v['name']} is now {status}.", "channel": "vendors"})
     asyncio.create_task(candidate_search(1, v["category"]))  # trigger (a)
     asyncio.create_task(vendor_watch(1))
     return JSONResponse({"ok": True})
@@ -600,8 +610,8 @@ async def wh_whatsapp(req: Request) -> JSONResponse:
             conn.commit()
     finally:
         conn.close()
-    save_message(1, "vendor", f"{sender}: {text[:300]} -> {json.dumps(f)[:300]}")
-    await broadcast({"sender": "vendor", "text": f"{sender}: {text[:300]}"})
+    save_message(1, "vendor", f"{sender}: {text[:300]} -> {json.dumps(f)[:300]}", "vendors")
+    await broadcast({"sender": "vendor", "text": f"{sender}: {text[:300]}", "channel": "vendors"})
     return JSONResponse({"ok": True, "extracted": f})
 
 
@@ -656,7 +666,7 @@ async def wh_elevenlabs(req: Request) -> JSONResponse:
     cid = str(d.get("conversation_id", ""))
     if dtype == "call_initiation_failure":
         reason = d.get("failure_reason", "unknown")
-        save_message(1, "agent", f"Call {cid} failed ({reason}) — falling back to WhatsApp.")
+        save_message(1, "agent", f"Call {cid} failed ({reason}) — falling back to WhatsApp.", "vendors")
         await broadcast({"sender": "agent",
                          "text": f"Call failed ({reason}); will WhatsApp instead."})
         return JSONResponse({"ok": True})
@@ -670,8 +680,8 @@ async def wh_elevenlabs(req: Request) -> JSONResponse:
         conn.commit()
     finally:
         conn.close()
-    save_message(1, "agent", f"Call {cid} done: {json.dumps(f)[:300]}")
-    await broadcast({"sender": "agent", "text": f"Call summary: {json.dumps(f)[:300]}"})
+    save_message(1, "agent", f"Call {cid} done: {json.dumps(f)[:300]}", "vendors")
+    await broadcast({"sender": "agent", "text": f"Call summary: {json.dumps(f)[:300]}", "channel": "vendors"})
     return JSONResponse({"ok": True, "extracted": f})
 
 
@@ -784,10 +794,11 @@ async def ws_room(ws: WebSocket) -> None:
         while True:
             data = await ws.receive_json()
             text = str(data.get("text", ""))[:2000]
+            channel = valid_channel(str(data.get("channel", "room")))
             if not text.strip():
                 continue
-            save_message(1, sender, text)
-            await broadcast({"sender": sender, "text": text})
+            save_message(1, sender, text, channel)
+            await broadcast({"sender": sender, "text": text, "channel": channel})
             if "@agent" in text.lower():
                 request = text.lower().replace("@agent", "", 1).strip() or text
                 await agent_queue.put({"sender": sender, "request": request,
