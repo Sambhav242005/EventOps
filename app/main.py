@@ -33,19 +33,12 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("eventops")
 
 app = FastAPI(title="EventOps Agent")
-_frontends = list(dict.fromkeys([
-    *(o.strip() for o in os.environ.get(
-        "FRONTEND_URL", "http://localhost:3000").split(",") if o.strip()),
-    # Local development commonly uses either port; allow both host spellings.
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "http://localhost:3003",
-    "http://127.0.0.1:3003",
-]))
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_frontends,
-    allow_credentials=True,
+    # The API uses bearer tokens rather than cross-origin cookies. Allow any
+    # hosted frontend origin; authorization is still enforced by API routes.
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )

@@ -37,6 +37,20 @@ def test_protected_routes_need_login():
         assert c.get("/api/export/attendees").status_code == 401
 
 
+def test_cors_allows_deployed_frontend_origins():
+    with fresh_client() as c:
+        response = c.options(
+            "/api/register",
+            headers={
+                "Origin": "https://any-eventops-frontend.example",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "content-type",
+            },
+        )
+        assert response.status_code == 200
+        assert response.headers["access-control-allow-origin"] == "*"
+
+
 def test_event_creation_and_member_role_controls():
     with fresh_client() as c:
         organizer = auth(c)
