@@ -8,9 +8,17 @@ venv/
 *.db
 *.db-journal
 *.sqlite3
-# Env / secrets — never commit real keys
+# Env / secrets — never commit real keys (only .env.example documents vars)
 .env
 .env.local
+.env.*.local
+*.pem
+*.key
+# Next.js frontend
+web/node_modules/
+web/.next/
+web/out/
+.next/
 # OS / editor
 .DS_Store
 Thumbs.db

@@ -1,0 +1,40 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Warm Orchestration (Stitch) mapped onto shadcn CSS variables */
+@layer base {
+  :root {
+    --background: 36 33% 97%;        /* warm cream #FAF8F5 */
+    --foreground: 220 13% 18%;       /* deep charcoal */
+    --card: 0 0% 100%;
+    --card-foreground: 220 13% 18%;
+    --primary: 243 72% 59%;          /* indigo #4F46E5 */
+    --primary-foreground: 0 0% 100%;
+    --secondary: 160 84% 39%;        /* emerald #10B981 family */
+    --secondary-foreground: 0 0% 100%;
+    --muted: 40 20% 94%;             /* linen #F5F3EF */
+    --muted-foreground: 220 9% 40%;
+    --accent: 38 92% 50%;            /* amber #F59E0B */
+    --accent-foreground: 0 0% 100%;
+    --border: 220 13% 91%;
+    --input: 220 13% 91%;
+    --ring: 243 72% 59%;
+    --radius: 1.25rem;
+    --font-display: "Plus Jakarta Sans", sans-serif;
+    --font-body: "Inter", sans-serif;
+  }
+  * {
+    @apply border-border;
+  }
+  ::selection {
+    background: hsl(var(--primary) / 0.18);
+  }
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+  }
+  .chat-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--border)) transparent;
+  }
+}

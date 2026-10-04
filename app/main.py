@@ -11,6 +11,7 @@ import uuid
 from pathlib import Path
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -22,7 +23,7 @@ from .calls import build_call_brief, extract_call_fields, get_calls
 from .db import get_conn, init_db, now_iso, seed_demo
 from .decision import approval_rule, draft_notice, risk_level
 from .llm import get_llm, parse_json_lenient
-from .messaging import _opted_out, extract_vendor_fields, get_messaging
+from .messaging import _opted_out, extract_vendor_fields, get_messaging, norm_wa
 from .ops import apply_photo_names, check_in_token, export_csv, table_rows
 from .research import candidate_search, research_loop, vendor_watch, weather_check
 
@@ -30,6 +31,15 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("eventops")
 
 app = FastAPI(title="EventOps Agent")
+_frontends = [o.strip() for o in os.environ.get(
+    "FRONTEND_URL", "http://localhost:3000").split(",") if o.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_frontends,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 BASE = Path(__file__).resolve().parent.parent
 
 connected: set[WebSocket] = set()
@@ -172,6 +182,32 @@ async def agent_worker() -> None:
         agent_queue.task_done()
 
 
+def audience_phones(audience: str, event_id: int = 1) -> list[str]:
+    """Resolve an audience to E.164 numbers. 'to:+91…' sends direct."""
+    audience = (audience or "").strip()
+    if audience.startswith("to:"):
+        n = norm_wa(audience[3:])
+        return [n] if n else []
+    conn = get_conn()
+    try:
+        if audience in ("team",):
+            rows = conn.execute("SELECT phone FROM members WHERE event_id=? AND phone<>''",
+                                (event_id,)).fetchall()
+        elif audience in ("guests",):
+            rows = conn.execute("SELECT phone FROM attendees WHERE event_id=? AND phone<>''",
+                                (event_id,)).fetchall()
+        elif audience in ("all", "everyone", "team+guests"):
+            rows = conn.execute("SELECT phone FROM members WHERE event_id=? AND phone<>''",
+                                (event_id,)).fetchall()
+            rows = list(rows) + list(conn.execute(
+                "SELECT phone FROM attendees WHERE event_id=? AND phone<>''", (event_id,)).fetchall())
+        else:  # single number passed as audience
+            return [norm_wa(audience)] if norm_wa(audience) else []
+        return [norm_wa(r["phone"]) for r in rows if norm_wa(r["phone"])]
+    finally:
+        conn.close()
+
+
 def audience_count(audience: str) -> int:
     conn = get_conn()
     try:
@@ -221,7 +257,15 @@ def queue_call(args: dict, requester: str) -> int:
 async def startup() -> None:
     init_db()
     seed_demo()
+
+    async def _room_notify(text: str) -> None:
+        save_message(1, "agent", text)
+        await broadcast({"sender": "agent", "text": text})
+
+    from .research import set_notifier
+    set_notifier(_room_notify)
     asyncio.create_task(agent_worker())
+    asyncio.create_task(sender_loop())
     if os.environ.get("RESEARCH_LOOP", "1") == "1":
         asyncio.create_task(research_loop(1))
 
@@ -251,6 +295,8 @@ async def api_event(req: Request) -> JSONResponse:
             "SELECT * FROM call_log ORDER BY id DESC LIMIT 20").fetchall()]
         msgs = [dict(r) for r in conn.execute(
             "SELECT sender,text,created_at FROM messages ORDER BY id DESC LIMIT 50").fetchall()]
+        roster = [dict(r) for r in conn.execute(
+            "SELECT id,name,phone,qr_token,checked_in,checked_in_at FROM attendees").fetchall()]
         counts = {t: conn.execute(f"SELECT COUNT(*) c FROM {t}").fetchone()["c"]
                   for t in ("attendees", "vendors")}
         checked = conn.execute(
@@ -260,6 +306,7 @@ async def api_event(req: Request) -> JSONResponse:
     return JSONResponse({"event": dict(ev) if ev else None, "vendors": vendors,
                          "candidates": cands, "alerts": alerts, "outbound": outb,
                          "calls": calls, "messages": list(reversed(msgs)),
+                         "attendees": roster,
                          "attendance": {"checked": checked, "total": counts["attendees"]}})
 
 
@@ -281,17 +328,138 @@ async def approve(req: Request) -> JSONResponse:
         risk = risk_level("draft_message", {"audience": aud}, body)
         if approval_rule(risk)["organizer_only"] and role != "organizer":
             return JSONResponse({"ok": False, "error": "organizer-only approval"}, status_code=403)
-        # fan-out: team -> members placeholder; guests -> attendees phones
-        targets = [approver]
-        res = await get_messaging().send(",".join(targets), body, row["idempotency_key"])
-        conn.execute("UPDATE outbound_log SET status=?, approved_by=? WHERE id=?",
-                     ("sent" if res.get("ok") else "failed", approver, oid))
+        # 5-min safety buffer: approval schedules, worker sends. Edit/cancel freely until send_at.
+        from datetime import datetime, timedelta
+        buf_min = float(os.environ.get("BUFFER_MIN", "5"))
+        send_at = (datetime.now() + timedelta(minutes=buf_min)).strftime("%Y-%m-%dT%H:%M:%S%z")
+        conn.execute("UPDATE outbound_log SET status='approved', approved_by=?, send_at=? WHERE id=?",
+                     (approver, send_at, oid))
         conn.commit()
     finally:
         conn.close()
-    save_message(1, "agent", f"Notice #{oid} approved by {approver} ({role}): {res.get('status')}")
-    await broadcast({"sender": "agent", "text": f"Notice #{oid} -> {res.get('status')}"})
-    return JSONResponse({"ok": True, "result": res})
+    save_message(1, "agent", f"Notice #{oid} approved by {approver} ({role}): "
+                            f"sends at {send_at} — edit/cancel within {buf_min:g} min")
+    await broadcast({"sender": "agent",
+                     "text": f"Notice #{oid} scheduled for {send_at} (buffer {buf_min:g} min)"})
+    return JSONResponse({"ok": True, "id": oid, "send_at": send_at, "buffer_min": buf_min})
+
+
+@app.post("/api/edit_outbound")
+async def edit_outbound(req: Request) -> JSONResponse:
+    """Fix a mistake during the buffer window. Only pending/approved can change."""
+    approver, _role = require_auth(req)
+    data = await req.json()
+    oid, body = int(data.get("id", 0)), str(data.get("body", ""))[:1500]
+    if not body.strip():
+        return JSONResponse({"ok": False, "error": "empty body"}, status_code=400)
+    conn = get_conn()
+    try:
+        row = conn.execute("SELECT status FROM outbound_log WHERE id=?", (oid,)).fetchone()
+        if not row:
+            return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+        if row["status"] not in ("pending", "approved"):
+            return JSONResponse({"ok": False, "error": f"already {row['status']}, too late to edit"},
+                                status_code=400)
+        conn.execute("UPDATE outbound_log SET body=? WHERE id=?", (body, oid))
+        conn.commit()
+    finally:
+        conn.close()
+    await broadcast({"sender": "agent", "text": f"Notice #{oid} edited by {approver}"})
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/cancel_outbound")
+async def cancel_outbound(req: Request) -> JSONResponse:
+    approver, _role = require_auth(req)
+    oid = int((await req.json()).get("id", 0))
+    conn = get_conn()
+    try:
+        row = conn.execute("SELECT status FROM outbound_log WHERE id=?", (oid,)).fetchone()
+        if not row:
+            return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+        if row["status"] not in ("pending", "approved"):
+            return JSONResponse({"ok": False, "error": f"already {row['status']}, too late to cancel"},
+                                status_code=400)
+        conn.execute("UPDATE outbound_log SET status='cancelled' WHERE id=?", (oid,))
+        conn.commit()
+    finally:
+        conn.close()
+    await broadcast({"sender": "agent", "text": f"Notice #{oid} cancelled by {approver}"})
+    return JSONResponse({"ok": True})
+
+
+async def send_outbound_now(oid: int) -> dict:
+    """Worker send: fan-out an approved (due) notice. Returns {sent:[...]}."""
+    conn = get_conn()
+    try:
+        row = conn.execute("SELECT * FROM outbound_log WHERE id=?", (oid,)).fetchone()
+        if not row or row["status"] != "approved":
+            return {"ok": False, "error": "not approved/due"}
+        body = row["body"]
+        aud = row["recipient"].split("audience:", 1)[-1] if "audience:" in row["recipient"] else ""
+        targets = audience_phones(aud if aud else row["recipient"])
+        if not targets:
+            conn.execute("UPDATE outbound_log SET status='failed' WHERE id=?", (oid,))
+            conn.commit()
+            return {"ok": False, "error": "no phone numbers for audience"}
+        res, sent, last_sid = {"ok": True, "status": "sent"}, [], ""
+        adapter = get_messaging()
+        for t in targets:
+            r = await adapter.send(t, body, f"{row['idempotency_key']}-{t}")
+            if r.get("ok"):
+                sent.append(t)
+                last_sid = str(r.get("sid", last_sid))
+            else:
+                res = r
+            await asyncio.sleep(3.1 if adapter.channel == "whatsapp" else 0)
+        conn.execute("UPDATE outbound_log SET status=?, ext_sid=? WHERE id=?",
+                     ("sent" if sent else "failed", last_sid, oid))
+        conn.commit()
+        return {"ok": bool(sent), "sent": sent, "result": res}
+    finally:
+        conn.close()
+
+
+async def sender_loop(interval_s: int = 15) -> None:
+    """Background sender: dispatch approved notices whose buffer expired."""
+    while True:
+        try:
+            conn = get_conn()
+            try:
+                due = conn.execute(
+                    "SELECT id FROM outbound_log WHERE status='approved' AND send_at<>'' "
+                    "AND send_at <= strftime('%Y-%m-%dT%H:%M:%S','now','localtime')").fetchall()
+            finally:
+                conn.close()
+            for row in due:
+                out = await send_outbound_now(int(row["id"]))
+                if out.get("sent"):
+                    await broadcast({"sender": "agent",
+                                     "text": f"Notice #{row['id']} sent to {len(out['sent'])} recipient(s)"})
+        except Exception as e:
+            log.warning("sender loop error: %s", e)
+        await asyncio.sleep(interval_s)
+
+
+@app.post("/api/attendee_phone")
+async def attendee_phone(req: Request) -> JSONResponse:
+    """Set a participant's number so audience 'guests'/'all' can reach them."""
+    _, role = require_auth(req)
+    if role != "organizer":
+        return JSONResponse({"ok": False, "error": "organizer only"}, status_code=403)
+    data = await req.json()
+    from .messaging import norm_wa
+    phone = norm_wa(str(data.get("phone", "")))
+    if not phone:
+        return JSONResponse({"ok": False, "error": "bad number"}, status_code=400)
+    conn = get_conn()
+    try:
+        conn.execute("UPDATE attendees SET phone=? WHERE id=? AND event_id=1",
+                     (phone, int(data.get("id", 0))))
+        conn.commit()
+    finally:
+        conn.close()
+    return JSONResponse({"ok": True, "phone": phone})
 
 
 @app.post("/api/approve_call")
@@ -379,7 +547,7 @@ async def vendor_status(req: Request) -> JSONResponse:
 async def wh_whatsapp(req: Request) -> JSONResponse:
     form = dict(await req.form()) if "form" in req.headers.get("content-type", "") else await req.json()
     msg_id = str(form.get("MessageSid") or form.get("SmsMessageSid") or form.get("id") or "")
-    sender = str(form.get("From") or form.get("from") or "")
+    sender = norm_wa(str(form.get("From") or form.get("from") or ""))
     text = str(form.get("Body") or form.get("text") or "")
     adapter = get_messaging()
     if not adapter.note_inbound(sender, msg_id):
@@ -405,6 +573,23 @@ async def wh_whatsapp(req: Request) -> JSONResponse:
     save_message(1, "vendor", f"{sender}: {text[:300]} -> {json.dumps(f)[:300]}")
     await broadcast({"sender": "vendor", "text": f"{sender}: {text[:300]}"})
     return JSONResponse({"ok": True, "extracted": f})
+
+
+@app.post("/webhooks/twilio_status")
+async def wh_twilio_status(req: Request) -> JSONResponse:
+    """Delivery receipts: queued/sent/delivered/read/failed (+ErrorCode). Updates outbound_log."""
+    form = dict(await req.form()) if "form" in req.headers.get("content-type", "") else await req.json()
+    sid, status = str(form.get("MessageSid", "")), str(form.get("MessageStatus", ""))
+    if not (sid and status):
+        return JSONResponse({"ok": False}, status_code=400)
+    conn = get_conn()
+    try:
+        conn.execute("UPDATE outbound_log SET status=? WHERE ext_sid=?", (status, sid))
+        conn.commit()
+    finally:
+        conn.close()
+    await broadcast({"sender": "system", "text": f"Delivery {sid[:10]}… -> {status}"})
+    return JSONResponse({"ok": True})
 
 
 @app.post("/webhooks/telegram")

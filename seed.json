@@ -11,8 +11,8 @@
     "timezone": "Asia/Kolkata"
   },
   "members": [
-    {"name": "Asha", "role": "organizer", "passcode_env": "DEMO_ORG_PASS", "default": "1111"},
-    {"name": "Ravi", "role": "member", "passcode_env": "DEMO_MEMBER_PASS", "default": "2222"}
+    {"name": "Asha", "role": "organizer", "phone": "+917999468896", "passcode_env": "DEMO_ORG_PASS", "default": "1111"},
+    {"name": "Ravi", "role": "member", "phone": "", "passcode_env": "DEMO_MEMBER_PASS", "default": "2222"}
   ],
   "vendors": [
     {"name": "Sharma Caterers", "category": "catering", "phone": "+919100000001", "whatsapp": "+919100000001", "status": "confirmed", "quote": 80000, "conditions": "500 plates, veg"},
@@ -23,6 +23,6 @@
     {"title": "Confirm caterer headcount", "owner": "Ravi", "due": "today", "status": "open"},
     {"title": "Print QR check-in sheets", "owner": "Asha", "due": "today", "status": "open"}
   ],
-  "attendees": {"name_pattern": "Guest %02d", "count": 5, "token_pattern": "QR-%04d"},
+  "attendees": {"name_pattern": "Guest %02d", "count": 5, "token_pattern": "QR-%04d", "phones": []},
   "welcome": "Welcome to the event room. Tag @agent to ask for help."
 }

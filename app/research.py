@@ -23,6 +23,49 @@ log = logging.getLogger("eventops.research")
 _search_times: list[float] = []
 _last_weather_alert: float = 0.0
 
+# Room notifier hook: main.py registers save+broadcast so background
+# findings surface in the room without import cycles.
+_notifier = None
+
+
+def set_notifier(fn) -> None:
+    global _notifier
+    _notifier = fn
+
+
+async def notify(text: str) -> None:
+    if _notifier:
+        try:
+            await _notifier(text)
+        except Exception as e:
+            log.warning("notify failed: %s", e)
+
+
+THRESHOLDS = [(168, "T-7d"), (24, "T-24h"), (5, "T-5h")]
+
+
+async def threshold_checks(event_id: int = 1) -> list[str]:
+    """Fire once per threshold crossing (dedupe via alerts table)."""
+    conn = get_conn()
+    try:
+        ev = conn.execute("SELECT * FROM events WHERE id=?", (event_id,)).fetchone()
+    finally:
+        conn.close()
+    if not ev:
+        return []
+    hrs = hours_to_event(ev["date_time"])
+    fired = []
+    for limit, label in THRESHOLDS:
+        if hrs <= limit:
+            if add_alert(event_id, "threshold", "info",
+                         f"{label} reached ({hrs:.0f}h to {ev['name']}). "
+                         "Confirm vendors, charge phones, print QR sheets.",
+                         {"hours_left": round(hrs, 1), "label": label}):
+                fired.append(label)
+    if fired:
+        await notify(f"⏰ {' + '.join(fired)} to go — final checks running.")
+    return fired
+
 
 def log_run(event_id: int, kind: str, inp: dict, out: dict, rule: str = "") -> None:
     conn = get_conn()
@@ -163,11 +206,16 @@ async def candidate_search(event_id: int, category: str) -> dict:
 
 
 async def research_loop(event_id: int = 1, interval_s: int = 300) -> None:
-    """Scheduled checks: weather + vendor watch every interval (default 5m)."""
+    """Scheduled checks: weather + vendor watch + thresholds every interval."""
     while True:
         try:
-            await weather_check(event_id)
-            await vendor_watch(event_id)
+            w = await weather_check(event_id)
+            if w.get("alerted"):
+                await notify(f"🌧 {w.get('risk_pct')}% rain risk and outdoor venue — consider cover.")
+            v = await vendor_watch(event_id)
+            if v.get("flagged"):
+                await notify(f"⚠️ Vendors need attention: {', '.join(v['flagged'][:3])}.")
+            await threshold_checks(event_id)
         except Exception as e:
             log.warning("research loop error: %s", e)
         await asyncio.sleep(interval_s)

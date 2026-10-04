@@ -52,11 +52,18 @@ SEVERITY_ORDER = {"safety": 0, "venue": 1, "food": 2, "program": 3, "extras": 4}
 
 
 def hours_to_event(event_iso: str, now: datetime | None = None) -> float:
+    import os
     now = now or datetime.now(timezone.utc)
+    try:
+        from zoneinfo import ZoneInfo
+        local_tz = ZoneInfo(os.environ.get("EVENT_TIMEZONE", "Asia/Kolkata"))
+    except Exception:
+        from datetime import timezone as _tz
+        local_tz = _tz.utc  # type: ignore
     try:
         dt = datetime.fromisoformat(event_iso)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=local_tz)  # seed stores wall-clock; never assume UTC
         return max(0.0, (dt - now).total_seconds() / 3600)
     except Exception:
         return 999.0

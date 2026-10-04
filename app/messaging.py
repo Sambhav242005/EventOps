@@ -167,7 +167,8 @@ class WhatsAppAdapter(MessagingAdapter):
         use_template = not self.in_window(to)
         payload_body = (f"[template: event inquiry] {TEMPLATE} -- {body[:300]}"
                         if use_template else body[:1500])
-        if not self.sid:  # no creds -> mock-send but keep template/window logic honest            res = {"ok": True, "status": "sent‑mock", "to": to, "channel": "whatsapp",
+        if not self.sid:  # no creds -> mock-send but keep template/window logic honest
+            res = {"ok": True, "status": "sent-mock", "to": to, "channel": "whatsapp",
                    "used_template": use_template, "body": payload_body[:500], "key": key}
             _sent_keys[key] = res
             return res

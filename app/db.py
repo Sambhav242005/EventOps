@@ -48,7 +48,8 @@ CREATE TABLE IF NOT EXISTS outbound_log(
   id INTEGER PRIMARY KEY AUTOINCREMENT, event_id INTEGER NOT NULL,
   channel TEXT NOT NULL, recipient TEXT DEFAULT '', body TEXT DEFAULT '',
   status TEXT DEFAULT 'queued', approved_by TEXT DEFAULT '',
-  idempotency_key TEXT DEFAULT '', created_at TEXT NOT NULL);
+  idempotency_key TEXT DEFAULT '', ext_sid TEXT DEFAULT '',
+  send_at TEXT DEFAULT '', created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS call_log(
   id INTEGER PRIMARY KEY AUTOINCREMENT, event_id INTEGER NOT NULL,
   vendor_id INTEGER DEFAULT 0, conversation_id TEXT DEFAULT '',
@@ -78,9 +79,19 @@ def init_db(db_path: str = DB_PATH) -> None:
     conn = get_conn(db_path)
     conn.executescript(SCHEMA)
     # migration for DBs created before passcode column existed
-    cols = [r["name"] for r in conn.execute("PRAGMA table_info(members)").fetchall()]
-    if "passcode" not in cols:
+    mcols = [r["name"] for r in conn.execute("PRAGMA table_info(members)").fetchall()]
+    if "passcode" not in mcols:
         conn.execute("ALTER TABLE members ADD COLUMN passcode TEXT NOT NULL DEFAULT ''")
+    if "phone" not in mcols:
+        conn.execute("ALTER TABLE members ADD COLUMN phone TEXT NOT NULL DEFAULT ''")
+    ocols = [r["name"] for r in conn.execute("PRAGMA table_info(outbound_log)").fetchall()]
+    if "ext_sid" not in ocols:  # provider message SID (Twilio) for status callbacks
+        conn.execute("ALTER TABLE outbound_log ADD COLUMN ext_sid TEXT NOT NULL DEFAULT ''")
+    if "send_at" not in ocols:  # scheduled send time (5-min safety buffer after approval)
+        conn.execute("ALTER TABLE outbound_log ADD COLUMN send_at TEXT NOT NULL DEFAULT ''")
+    acols = [r["name"] for r in conn.execute("PRAGMA table_info(attendees)").fetchall()]
+    if "phone" not in acols:  # participant messaging needs numbers
+        conn.execute("ALTER TABLE attendees ADD COLUMN phone TEXT NOT NULL DEFAULT ''")
     conn.commit()
     conn.close()
 
@@ -116,9 +127,10 @@ def seed_demo(db_path: str = DB_PATH) -> int:
     )
     eid = int(cur.lastrowid)
     conn.executemany(
-        "INSERT INTO members(event_id,name,role,passcode) VALUES(?,?,?,?)",
+        "INSERT INTO members(event_id,name,role,passcode,phone) VALUES(?,?,?,?,?)",
         [(eid, m["name"], m.get("role", "member"),
-          _code_hash(os.environ.get(m.get("passcode_env", ""), m.get("default", ""))))
+          _code_hash(os.environ.get(m.get("passcode_env", ""), m.get("default", ""))),
+          m.get("phone", ""))
          for m in seed.get("members", [])],
     )
     conn.executemany(
@@ -135,10 +147,13 @@ def seed_demo(db_path: str = DB_PATH) -> int:
          for t in seed.get("tasks", [])],
     )
     att = seed.get("attendees", {})
+    phones = att.get("phones", [])
     for i in range(1, int(att.get("count", 0)) + 1):
         conn.execute(
-            "INSERT INTO attendees(event_id,name,qr_token) VALUES(?,?,?)",
-            (eid, att["name_pattern"] % i, att["token_pattern"] % i),
+            "INSERT INTO attendees(event_id,name,phone,qr_token) VALUES(?,?,?,?)",
+            (eid, att["name_pattern"] % i,
+             phones[i - 1] if i - 1 < len(phones) else "",
+             att["token_pattern"] % i),
         )
     conn.execute(
         "INSERT INTO messages(event_id,sender,text,created_at) VALUES(?,?,?,?)",

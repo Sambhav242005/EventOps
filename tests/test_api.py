@@ -7,6 +7,7 @@ os.environ.update({"LLM_BACKEND": "mock", "MESSAGING_BACKEND": "mock",
 from fastapi.testclient import TestClient
 
 from app.db import get_conn, init_db, seed_demo
+from app.main import send_outbound_now
 from tests.helpers import MEM_NAME, ORG_NAME, first_vendor, mem_code, org_code
 
 
@@ -42,9 +43,80 @@ def test_approve_edges():
         assert c.post("/api/approve", json={"id": 9999}, headers=h).status_code == 404
         n = c.post("/api/notice", json={"audience": "team", "change": "x"}, headers=h).json()
         assert n["count"] >= 2
-        assert c.post("/api/approve", json={"id": n["id"]}, headers=h).json()["ok"]
+        a = c.post("/api/approve", json={"id": n["id"]}, headers=h).json()
+        assert a["ok"] and a["send_at"]  # scheduled, NOT sent yet (buffer)
         r = c.post("/api/approve", json={"id": n["id"]}, headers=h)
-        assert r.status_code == 400  # already sent, no double-send
+        assert r.status_code == 400  # already approved, no double-schedule
+
+
+def test_buffer_edit_cancel_and_worker_send():
+    import asyncio
+    with fresh_client() as c:
+        h = auth(c)
+        n = c.post("/api/notice", json={"audience": "team", "change": "gate A"}, headers=h).json()
+        c.post("/api/approve", json={"id": n["id"]}, headers=h)
+        # edit within buffer
+        assert c.post("/api/edit_outbound", json={"id": n["id"], "body": "gate B"}, headers=h).json()["ok"]
+        # force due + worker sends via mock backend
+        conn = get_conn()
+        conn.execute("UPDATE outbound_log SET send_at='2000-01-01T00:00:00+0000' WHERE id=?", (n["id"],))
+        conn.commit()
+        conn.close()
+        out = asyncio.new_event_loop().run_until_complete(send_outbound_now(n["id"]))
+        assert out["ok"] and out["sent"]
+        # too late to edit/cancel after send
+        assert c.post("/api/edit_outbound", json={"id": n["id"], "body": "x"}, headers=h).status_code == 400
+        assert c.post("/api/cancel_outbound", json={"id": n["id"]}, headers=h).status_code == 400
+        # cancel path stops the worker
+        n2 = c.post("/api/notice", json={"audience": "team", "change": "y"}, headers=h).json()
+        c.post("/api/approve", json={"id": n2["id"]}, headers=h)
+        assert c.post("/api/cancel_outbound", json={"id": n2["id"]}, headers=h).json()["ok"]
+        out2 = asyncio.new_event_loop().run_until_complete(send_outbound_now(n2["id"]))
+        assert out2["ok"] is False
+
+
+def test_participant_messaging_fanout():
+    import asyncio
+    with fresh_client() as c:
+        h = auth(c)
+        conn = get_conn()
+        aid = conn.execute("SELECT id FROM attendees LIMIT 1").fetchone()["id"]
+        conn.close()
+        assert c.post("/api/attendee_phone", json={"id": aid, "phone": "+911234567890"}, headers=h).json()["ok"]
+        n = c.post("/api/notice", json={"audience": "guests", "change": "doors open"}, headers=h).json()
+        assert n["count"] >= 1
+        conn = get_conn()
+        conn.execute("UPDATE outbound_log SET status='approved', send_at='2000-01-01T00:00:00+0000' WHERE id=?", (n["id"],))
+        conn.commit()
+        conn.close()
+        out = asyncio.new_event_loop().run_until_complete(send_outbound_now(n["id"]))
+        assert out["ok"] and "+911234567890" in out["sent"]
+
+
+def test_thresholds_fire_once_and_notify():
+    import asyncio
+    from app.research import set_notifier, threshold_checks
+    notes: list[str] = []
+
+    async def hook(text: str) -> None:
+        notes.append(text)
+
+    try:
+        with fresh_client():
+            set_notifier(hook)  # must be after startup: startup registers room notifier
+            conn = get_conn()
+            from datetime import datetime, timedelta
+            soon = (datetime.now() + timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M:%S")
+            conn.execute("UPDATE events SET date_time=?", (soon,))
+            conn.commit()
+            conn.close()
+            loop = asyncio.new_event_loop()
+            fired = loop.run_until_complete(threshold_checks(1))
+            assert "T-5h" in fired and notes  # posted to room
+            fired2 = loop.run_until_complete(threshold_checks(1))
+            assert fired2 == []  # deduped, fires once
+    finally:
+        set_notifier(None)
 
 
 def test_whatsapp_webhook_extract_and_vendor_update():
