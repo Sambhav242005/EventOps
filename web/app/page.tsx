@@ -32,6 +32,13 @@ type CallItem = {
 
 type Candidate = { id: number; name: string; price_hint?: number | null };
 type AlertItem = { id: number; severity: string; text: string };
+type Attendee = {
+  id: number;
+  name: string;
+  phone?: string;
+  qr_token?: string;
+  checked_in?: number;
+};
 
 type EventData = {
   attendance: { checked: number; total: number };
@@ -40,6 +47,7 @@ type EventData = {
   alerts?: AlertItem[];
   calls?: CallItem[];
   messages?: Msg[];
+  attendees?: Attendee[];
 };
 
 type LoginResp = { ok: boolean; token?: string; role?: string; name?: string; error?: string };
@@ -602,9 +610,13 @@ export default function Room() {
                       </span>
                       <Badge variant="warning">pending</Badge>
                     </div>
-                    <Button size="sm" className="mt-2 w-full" onClick={() => approveCall(c.id)}>
-                      Approve call
-                    </Button>
+                    {role === "organizer" ? (
+                      <Button size="sm" className="mt-2 w-full" onClick={() => approveCall(c.id)}>
+                        Approve call
+                      </Button>
+                    ) : (
+                      <p className="mt-2 text-xs text-muted-foreground">Organizer approval needed.</p>
+                    )}
                   </div>
                 ))}
                 <StatusNote text={callMsg} />
@@ -735,25 +747,38 @@ export default function Room() {
                   </Button>
                 </div>
                 <StatusNote text={door} />
-                <div className="grid gap-2">
-                  <Input
-                    value={attId}
-                    onChange={(e) => setAttId(e.target.value)}
-                    placeholder="Attendee id"
-                    inputMode="numeric"
-                    aria-label="Attendee id"
-                  />
-                  <Input
-                    value={attPhone}
-                    onChange={(e) => setAttPhone(e.target.value)}
-                    placeholder="+91…"
-                    inputMode="tel"
-                    aria-label="Attendee phone"
-                  />
-                  <Button size="sm" variant="secondary" onClick={setPhone}>
-                    Set phone
-                  </Button>
-                </div>
+                {(data?.attendees ?? []).length > 0 && role === "organizer" && (
+                  <div className="grid gap-2">
+                    <label htmlFor="att-select" className="text-sm text-muted-foreground">
+                      Set participant number
+                    </label>
+                    <select
+                      id="att-select"
+                      value={attId}
+                      onChange={(e) => setAttId(e.target.value)}
+                      className="h-10 w-full rounded-full border border-input bg-white px-4 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      <option value="">Choose attendee…</option>
+                      {(data?.attendees ?? []).map((a) => (
+                        <option key={a.id} value={a.id}>
+                          {a.name}
+                          {a.checked_in ? " ✓" : ""}
+                          {a.phone ? ` · ${a.phone}` : ""}
+                        </option>
+                      ))}
+                    </select>
+                    <Input
+                      value={attPhone}
+                      onChange={(e) => setAttPhone(e.target.value)}
+                      placeholder="+91…"
+                      inputMode="tel"
+                      aria-label="Attendee phone"
+                    />
+                    <Button size="sm" variant="secondary" onClick={setPhone} disabled={!attId}>
+                      Set phone
+                    </Button>
+                  </div>
+                )}
                 <StatusNote text={attMsg} />
                 <Button size="sm" variant="secondary" onClick={exportCsv}>
                   Export attendees CSV
