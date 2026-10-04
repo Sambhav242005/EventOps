@@ -840,8 +840,19 @@ async def event_checkin_qr(event_id: int, req: Request) -> Response:
             return JSONResponse({"ok": False, "error": "event not found"}, status_code=404)
     finally:
         conn.close()
-    origin = req.query_params.get("origin", "")
-    if origin not in set(_frontends):
+    from urllib.parse import urlsplit
+    origin = req.query_params.get("origin", "").rstrip("/")
+    parsed_origin = urlsplit(origin)
+    valid_origin = (
+        parsed_origin.scheme in {"http", "https"}
+        and bool(parsed_origin.netloc)
+        and parsed_origin.username is None
+        and parsed_origin.password is None
+        and not parsed_origin.path
+        and not parsed_origin.query
+        and not parsed_origin.fragment
+    )
+    if not valid_origin:
         origin = os.environ.get("PUBLIC_FRONTEND_URL", "http://localhost:3000").rstrip("/")
     link = f"{origin}/join?event_id={event_id}&door=1"
     img = qrcode.make(link, box_size=9, border=3)

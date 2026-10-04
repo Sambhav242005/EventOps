@@ -101,6 +101,17 @@ def test_event_qr_registration_records_door_attendance():
         assert c.post("/api/photo_checkin", headers=organizer, json={}).status_code == 404
 
 
+def test_event_qr_image_accepts_frontend_origin():
+    with fresh_client() as c:
+        response = c.get(
+            "/api/event-qr/1",
+            params={"origin": "https://eventops-web-38bf.onrender.com"},
+        )
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "image/png"
+        assert response.content.startswith(b"\x89PNG\r\n\x1a\n")
+
+
 def test_schedule_and_alert_list_pagination_filters():
     with fresh_client() as c:
         headers = auth(c)
