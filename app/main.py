@@ -110,6 +110,29 @@ async def _unauth_handler(req: Request, exc: _Unauthorized) -> JSONResponse:
     return JSONResponse({"ok": False, "error": "login required"}, status_code=401)
 
 
+@app.post("/api/register")
+async def register(req: Request) -> JSONResponse:
+    """Open team join: creates a MEMBER (never organizer). Organizer-only
+    actions stay gated server-side, so a self-registered member can't escalate."""
+    data = await req.json()
+    name = str(data.get("name", "")).strip()[:60]
+    code = str(data.get("passcode", ""))
+    if len(name) < 2 or len(code) < 4:
+        return JSONResponse({"ok": False, "error": "name (2+) and passcode (4+) required"},
+                            status_code=400)
+    conn = get_conn()
+    try:
+        if conn.execute("SELECT id FROM members WHERE event_id=1 AND lower(name)=lower(?)",
+                        (name,)).fetchone():
+            return JSONResponse({"ok": False, "error": "name taken"}, status_code=409)
+        conn.execute("INSERT INTO members(event_id,name,role,passcode,phone) VALUES(1,?, 'member',?,?)",
+                     (name, hash_code(code), ""))
+        conn.commit()
+    finally:
+        conn.close()
+    return JSONResponse({"ok": True, "name": name, "role": "member"})
+
+
 @app.post("/api/login")
 async def login(req: Request) -> JSONResponse:
     data = await req.json()
