@@ -15,20 +15,18 @@ export default function Register() {
   const [name, setName] = useState("");
   const [pass, setPass] = useState("");
   const [role, setRole] = useState<"member" | "organizer">("member");
-  const [organizerCode, setOrganizerCode] = useState("");
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
 
   async function submit() {
-    if (busy || name.trim().length < 2 || pass.length < 4 || (role === "organizer" && !organizerCode)) return;
+    if (busy || name.trim().length < 2 || pass.length < 4) return;
     setBusy(true);
     setMsg("");
     try {
       const r = await fetch(`${API}/api/register`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, passcode: pass, role,
-          ...(role === "organizer" ? { organizer_code: organizerCode } : {}) }),
+        body: JSON.stringify({ name, passcode: pass, role }),
       }).then((x) => x.json());
       if (!r.ok) {
         setMsg(`Registration failed: ${r.error ?? "unknown error"}`);
@@ -79,7 +77,7 @@ export default function Register() {
     }
   }
 
-  const valid = name.trim().length >= 2 && pass.length >= 4 && (role !== "organizer" || organizerCode.length > 0);
+  const valid = name.trim().length >= 2 && pass.length >= 4;
 
   return (
     <main className="mx-auto w-full max-w-md space-y-4 p-5 pt-16">
@@ -92,7 +90,7 @@ export default function Register() {
         <CardHeader>
           <CardTitle>Join the team</CardTitle>
           <p className="text-sm text-muted-foreground">
-            Choose your account access. Organizer registration requires a setup code.
+            Choose your account access. Anyone can create an organizer account.
           </p>
         </CardHeader>
         <CardContent className="space-y-3">
@@ -104,16 +102,9 @@ export default function Register() {
             </label>
             <label className="flex cursor-pointer items-start gap-3 rounded-xl border bg-background p-3">
               <input type="radio" name="account-role" value="organizer" checked={role === "organizer"} onChange={() => setRole("organizer")} className="mt-1 accent-primary" />
-              <span><span className="block text-sm font-semibold">Organizer</span><span className="block text-xs text-muted-foreground">Manage events, members, and approvals. Requires a private setup code.</span></span>
+              <span><span className="block text-sm font-semibold">Organizer</span><span className="block text-xs text-muted-foreground">Manage events, members, and approvals.</span></span>
             </label>
           </fieldset>
-          {role === "organizer" && (
-            <div className="space-y-1.5">
-              <label htmlFor="reg-organizer-code" className="text-sm font-medium">Organizer setup code</label>
-              <Input id="reg-organizer-code" value={organizerCode} onChange={(e) => setOrganizerCode(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} type="password" autoComplete="one-time-code" placeholder="Provided by the system owner" />
-              <p className="text-xs text-muted-foreground">Configure <code>ORGANIZER_SIGNUP_CODE</code> in the backend environment. Current organizers can also promote members in Manage.</p>
-            </div>
-          )}
           <div className="space-y-1.5">
             <label htmlFor="reg-name" className="text-sm font-medium">
               Name

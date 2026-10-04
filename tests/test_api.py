@@ -77,15 +77,10 @@ def test_event_creation_and_member_role_controls():
         assert demoted.status_code == 200 and demoted.json()["role"] == "member"
 
 
-def test_organizer_registration_requires_setup_code(monkeypatch):
+def test_organizer_registration_is_open():
     with fresh_client() as c:
-        monkeypatch.delenv("ORGANIZER_SIGNUP_CODE", raising=False)
         payload = {"name": "New organizer", "passcode": "safe-passcode", "role": "organizer"}
-        assert c.post("/api/register", json=payload).status_code == 403
-
-        monkeypatch.setenv("ORGANIZER_SIGNUP_CODE", "private-test-code")
-        assert c.post("/api/register", json={**payload, "organizer_code": "wrong"}).status_code == 403
-        created = c.post("/api/register", json={**payload, "organizer_code": "private-test-code"})
+        created = c.post("/api/register", json=payload)
         assert created.status_code == 200 and created.json()["role"] == "organizer"
         logged_in = c.post("/api/login", json={"name": payload["name"], "passcode": payload["passcode"]})
         assert logged_in.status_code == 200 and logged_in.json()["role"] == "organizer"

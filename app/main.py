@@ -178,7 +178,7 @@ def token_member(req: Request) -> dict:
 
 @app.post("/api/register")
 async def register(req: Request) -> JSONResponse:
-    """Join as a member or register as organizer with the private setup code."""
+    """Join the default event as a team member or organizer."""
     data = await req.json()
     name = str(data.get("name", "")).strip()[:60]
     code = str(data.get("passcode", ""))
@@ -190,13 +190,6 @@ async def register(req: Request) -> JSONResponse:
     if role not in {"member", "organizer"}:
         return JSONResponse({"ok": False, "error": "role must be member or organizer"},
                             status_code=400)
-    if role == "organizer":
-        setup_code = os.environ.get("ORGANIZER_SIGNUP_CODE", "")
-        submitted_code = str(data.get("organizer_code", ""))
-        if not setup_code or not hmac.compare_digest(setup_code, submitted_code):
-            return JSONResponse({"ok": False,
-                                 "error": "Organizer signup requires a valid organizer setup code."},
-                                status_code=403)
     conn = get_conn()
     try:
         ev = conn.execute("SELECT org_id,team_id FROM events WHERE id=?", (eid,)).fetchone()
