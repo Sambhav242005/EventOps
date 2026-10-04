@@ -11,6 +11,10 @@ os.environ.update({
     "CALL_BACKEND": "mock",
     "RESEARCH_LOOP": "0",
     "BUFFER_MIN": "0",
+    # Isolated test DB: the dev server (and other sessions) share ./eventops.db.
+    # Tests must NEVER write approved/due rows there — the live sender_loop
+    # would dispatch them to real people.
+    "DATABASE_URL": "sqlite:////tmp/eventops_test.db",
     "ELEVENLABS_API_KEY": "",
     "ELEVENLABS_WEBHOOK_SECRET": "",
     "TWILIO_ACCOUNT_SID": "",

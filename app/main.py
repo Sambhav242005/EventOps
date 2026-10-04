@@ -389,12 +389,19 @@ async def cancel_outbound(req: Request) -> JSONResponse:
 
 
 async def send_outbound_now(oid: int) -> dict:
-    """Worker send: fan-out an approved (due) notice. Returns {sent:[...]}."""
+    """Worker send: fan-out an approved (due) notice. Returns {sent:[...]}.
+
+    Atomic claim (approved->sending) so two workers/restarts can never
+    double-send the same notice to real people.
+    """
     conn = get_conn()
     try:
+        cur = conn.execute("UPDATE outbound_log SET status='sending' WHERE id=? AND status='approved'",
+                           (oid,))
+        conn.commit()
+        if cur.rowcount == 0:
+            return {"ok": False, "error": "not approved/due (already claimed or sent)"}
         row = conn.execute("SELECT * FROM outbound_log WHERE id=?", (oid,)).fetchone()
-        if not row or row["status"] != "approved":
-            return {"ok": False, "error": "not approved/due"}
         body = row["body"]
         aud = row["recipient"].split("audience:", 1)[-1] if "audience:" in row["recipient"] else ""
         targets = audience_phones(aud if aud else row["recipient"])

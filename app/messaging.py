@@ -13,6 +13,7 @@ Same interface: send(to, body, idempotency_key) + webhook receive + delivery sta
 from __future__ import annotations
 
 import logging
+import json
 import os
 import time
 import uuid
@@ -165,8 +166,32 @@ class WhatsAppAdapter(MessagingAdapter):
             _sent_keys[key] = res
             return res
         use_template = not self.in_window(to)
-        payload_body = (f"[template: event inquiry] {TEMPLATE} -- {body[:300]}"
-                        if use_template else body[:1500])
+        if use_template and self.sid:
+            # Outside the 24h window only a REAL pre-approved template may go out.
+            # Never send fake "[template: ...]" text to a real user (it looks broken
+            # and carriers reject it). Requires TWILIO_TEMPLATE_SID from the sandbox/
+            # business account; else fail loudly with instructions.
+            tpl = os.environ.get("TWILIO_TEMPLATE_SID", "")
+            if not tpl:
+                return {"ok": False, "status": "template_needed",
+                        "hint": "outside 24h window: set TWILIO_TEMPLATE_SID or have the user message first",
+                        "to": to, "key": key}
+            try:
+                async with httpx.AsyncClient(timeout=20) as c:
+                    r = await c.post(
+                        f"https://api.twilio.com/2010-04-01/Accounts/{self.sid}/Messages.json",
+                        auth=(self.auth_user, self.auth_pass),
+                        data={"From": self.from_, "To": f"whatsapp:{to}",
+                              "ContentSid": tpl,
+                              "ContentVariables": json.dumps({"1": body[:200]})})
+                    r.raise_for_status()
+                    res = {"ok": True, "status": "queued", "to": to, "channel": "whatsapp",
+                           "used_template": True, "key": key, "sid": r.json().get("sid")}
+            except Exception as e:
+                res = {"ok": False, "status": f"error: {e}", "to": to, "key": key}
+            _sent_keys[key] = res
+            return res
+        payload_body = body[:1500]
         if not self.sid:  # no creds -> mock-send but keep template/window logic honest
             res = {"ok": True, "status": "sent-mock", "to": to, "channel": "whatsapp",
                    "used_template": use_template, "body": payload_body[:500], "key": key}

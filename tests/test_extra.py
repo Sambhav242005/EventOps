@@ -218,6 +218,45 @@ def test_due_query_matches_sender_loop():
 
 
 # ---------- Ollama fallback ----------
+def test_double_dispatch_claimed_once():
+    import asyncio
+    from app.db import get_conn, init_db, seed_demo
+    from app.main import send_outbound_now
+    import pathlib
+    from app import db as _db
+    p = pathlib.Path(_db.DB_PATH)
+    if p.exists():
+        p.unlink()
+    init_db()
+    seed_demo()
+    conn = get_conn()
+    cur = conn.execute("""INSERT INTO outbound_log(event_id,channel,recipient,body,status,
+                        approved_by,idempotency_key,send_at,created_at)
+                        VALUES(1,'mock','audience:team','hi','approved','t','k-claim','2000-01-01T00:00:00+0000','t')""")
+    oid = int(cur.lastrowid)
+    conn.commit()
+    conn.close()
+    loop = asyncio.new_event_loop()
+    first = loop.run_until_complete(send_outbound_now(oid))
+    second = loop.run_until_complete(send_outbound_now(oid))
+    assert first["ok"] and second["ok"] is False
+
+
+def test_whatsapp_no_fake_template_text():
+    import asyncio
+    import os
+    from app.messaging import WhatsAppAdapter
+    os.environ["TWILIO_ACCOUNT_SID"] = "ACx"
+    try:
+        os.environ.pop("TWILIO_TEMPLATE_SID", None)
+        a = WhatsAppAdapter()
+        r = asyncio.new_event_loop().run_until_complete(a.send("+911234567890", "hello", "k-notpl"))
+        assert r["ok"] is False and r["status"] == "template_needed"
+        assert "[template" not in r.get("body", "")
+    finally:
+        del os.environ["TWILIO_ACCOUNT_SID"]
+
+
 def test_ollama_fallback_graceful_on_unreachable_host():
     from app.llm import OllamaAdapter
     a = OllamaAdapter(model="no-such-primary", host="http://127.0.0.1:1", timeout_s=2)
