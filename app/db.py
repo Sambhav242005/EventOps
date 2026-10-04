@@ -12,15 +12,24 @@ def _code_hash(code: str) -> str:
     return hashlib.sha256(f"eventops:{code}".encode()).hexdigest()
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS organizations(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS teams(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  org_id INTEGER NOT NULL, name TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS events(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL, date_time TEXT NOT NULL,
   venue TEXT, lat REAL, lng REAL, headcount INTEGER DEFAULT 0,
-  budget REAL DEFAULT 0, timezone TEXT DEFAULT 'Asia/Kolkata');
+  budget REAL DEFAULT 0, timezone TEXT DEFAULT 'Asia/Kolkata',
+  org_id INTEGER NOT NULL DEFAULT 1, team_id INTEGER);
 CREATE TABLE IF NOT EXISTS members(
   id INTEGER PRIMARY KEY AUTOINCREMENT, event_id INTEGER NOT NULL,
   name TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'member',
-  passcode TEXT NOT NULL DEFAULT '');
+  passcode TEXT NOT NULL DEFAULT '',
+  org_id INTEGER NOT NULL DEFAULT 1, team_id INTEGER);
 CREATE TABLE IF NOT EXISTS vendors(
   id INTEGER PRIMARY KEY AUTOINCREMENT, event_id INTEGER NOT NULL,
   name TEXT NOT NULL, category TEXT NOT NULL DEFAULT 'misc',
@@ -96,6 +105,17 @@ def init_db(db_path: str = DB_PATH) -> None:
     acols = [r["name"] for r in conn.execute("PRAGMA table_info(attendees)").fetchall()]
     if "phone" not in acols:  # participant messaging needs numbers
         conn.execute("ALTER TABLE attendees ADD COLUMN phone TEXT NOT NULL DEFAULT ''")
+    # multi-org/event/team refactor: backfill existing rows to org 1 via defaults
+    ecols = [r["name"] for r in conn.execute("PRAGMA table_info(events)").fetchall()]
+    if "org_id" not in ecols:
+        conn.execute("ALTER TABLE events ADD COLUMN org_id INTEGER NOT NULL DEFAULT 1")
+    if "team_id" not in ecols:
+        conn.execute("ALTER TABLE events ADD COLUMN team_id INTEGER")
+    mcols2 = [r["name"] for r in conn.execute("PRAGMA table_info(members)").fetchall()]
+    if "org_id" not in mcols2:
+        conn.execute("ALTER TABLE members ADD COLUMN org_id INTEGER NOT NULL DEFAULT 1")
+    if "team_id" not in mcols2:
+        conn.execute("ALTER TABLE members ADD COLUMN team_id INTEGER")
     conn.commit()
     conn.close()
 
@@ -108,33 +128,77 @@ def seed_file() -> Path:
     return Path(os.environ.get("SEED_FILE", Path(__file__).resolve().parent.parent / "seed.json"))
 
 
+def _resolve_org_id(org_ids: list[int], ref) -> int:
+    if ref is None:
+        return org_ids[0] if org_ids else 1
+    try:
+        return org_ids[int(ref)]
+    except Exception:
+        return org_ids[0] if org_ids else 1
+
+
+def _resolve_team_id(team_ids: list[int], ref):
+    if ref is None:
+        return None
+    try:
+        return team_ids[int(ref)]
+    except Exception:
+        return None
+
+
 def seed_demo(db_path: str = DB_PATH) -> int:
     """Seed demo content from seed.json (override path via SEED_FILE). Idempotent."""
     import json
     from datetime import datetime, timedelta
     conn = get_conn(db_path)
+    seed = json.loads(seed_file().read_text())
+    # orgs/teams first (idempotent: reuse existing rows by order)
+    org_rows = conn.execute("SELECT id FROM organizations ORDER BY id").fetchall()
+    org_ids: list[int] = [int(r["id"]) for r in org_rows]
+    if not org_ids:
+        for o in seed.get("organizations", [{"name": "Demo Org"}]):
+            cur_o = conn.execute(
+                "INSERT INTO organizations(name,created_at) VALUES(?,?)",
+                (o.get("name", "Demo Org"), now_iso()))
+            org_ids.append(int(cur_o.lastrowid))
+        conn.commit()
+    team_rows = conn.execute("SELECT id FROM teams ORDER BY id").fetchall()
+    team_ids: list[int] = [int(r["id"]) for r in team_rows]
+    if not team_ids:
+        for t in seed.get("teams", []):
+            t_org = _resolve_org_id(org_ids, t.get("org", 0))
+            cur_t = conn.execute(
+                "INSERT INTO teams(org_id,name,created_at) VALUES(?,?,?)",
+                (t_org, t.get("name", "Team"), now_iso()))
+            team_ids.append(int(cur_t.lastrowid))
+        conn.commit()
     row = conn.execute("SELECT id FROM events LIMIT 1").fetchone()
     if row:
         conn.close()
         return int(row["id"])
-    seed = json.loads(seed_file().read_text())
     ev = seed["event"]
     hh, mm = (ev.get("time", "18:00") + ":00").split(":")[:2]
     dt = (datetime.now() + timedelta(days=int(ev.get("days_ahead", 1)))).replace(
         hour=int(hh), minute=int(mm), second=0, microsecond=0)
+    ev_org = _resolve_org_id(org_ids, ev.get("org", 0))
+    ev_team = _resolve_team_id(team_ids, ev.get("team", None))
     cur = conn.execute(
-        "INSERT INTO events(name,date_time,venue,lat,lng,headcount,budget,timezone)"
-        " VALUES(?,?,?,?,?,?,?,?)",
+        "INSERT INTO events(name,date_time,venue,lat,lng,headcount,budget,timezone,org_id,team_id)"
+        " VALUES(?,?,?,?,?,?,?,?,?,?)",
         (ev["name"], dt.strftime("%Y-%m-%dT%H:%M:%S"), ev.get("venue", ""),
          ev.get("lat", 0), ev.get("lng", 0), ev.get("headcount", 0),
-         ev.get("budget", 0), ev.get("timezone", "Asia/Kolkata")),
+         ev.get("budget", 0), ev.get("timezone", "Asia/Kolkata"),
+         ev_org, ev_team),
     )
     eid = int(cur.lastrowid)
     conn.executemany(
-        "INSERT INTO members(event_id,name,role,passcode,phone) VALUES(?,?,?,?,?)",
+        "INSERT INTO members(event_id,name,role,passcode,phone,org_id,team_id)"
+        " VALUES(?,?,?,?,?,?,?)",
         [(eid, m["name"], m.get("role", "member"),
           _code_hash(os.environ.get(m.get("passcode_env", ""), m.get("default", ""))),
-          m.get("phone", ""))
+          m.get("phone", ""),
+          _resolve_org_id(org_ids, m.get("org", 0)),
+          _resolve_team_id(team_ids, m.get("team", None)))
          for m in seed.get("members", [])],
     )
     conn.executemany(

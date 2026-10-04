@@ -4,6 +4,9 @@
 
 /* Warm Orchestration (Stitch) mapped onto shadcn CSS variables */
 @layer base {
+  html {
+    color-scheme: light;
+  }
   :root {
     --background: 36 33% 97%;        /* warm cream #FAF8F5 */
     --foreground: 220 13% 18%;       /* deep charcoal */

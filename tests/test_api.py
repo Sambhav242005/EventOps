@@ -37,6 +37,76 @@ def test_protected_routes_need_login():
         assert c.get("/api/export/attendees").status_code == 401
 
 
+def test_event_creation_and_member_role_controls():
+    with fresh_client() as c:
+        organizer = auth(c)
+        member = auth(c, MEM_NAME, mem_code())
+        denied = c.post("/api/events?event_id=1", headers=member,
+                        json={"name": "Denied event", "date_time": "2027-01-01T18:00:00"})
+        assert denied.status_code == 403
+
+        created = c.post("/api/events?event_id=1", headers=organizer,
+                         json={"name": "Second event", "date_time": "2027-01-01T18:00:00"})
+        assert created.status_code == 201
+        event_id = created.json()["event_id"]
+        assert event_id in [e["id"] for e in c.get("/api/myevents", headers=organizer).json()]
+
+        listed = c.get("/api/members?event_id=1", headers=organizer)
+        assert listed.status_code == 200
+        target = next(m for m in listed.json() if m["role"] == "member")
+        assert c.get("/api/members?event_id=1", headers=member).status_code == 403
+        changed = c.patch(f"/api/members/{target['id']}?event_id=1", headers=organizer,
+                          json={"role": "organizer"})
+        assert changed.status_code == 200 and changed.json()["role"] == "organizer"
+        demoted = c.patch(f"/api/members/{target['id']}?event_id=1", headers=organizer,
+                          json={"role": "member"})
+        assert demoted.status_code == 200 and demoted.json()["role"] == "member"
+
+
+def test_organizer_registration_requires_setup_code(monkeypatch):
+    with fresh_client() as c:
+        monkeypatch.delenv("ORGANIZER_SIGNUP_CODE", raising=False)
+        payload = {"name": "New organizer", "passcode": "safe-passcode", "role": "organizer"}
+        assert c.post("/api/register", json=payload).status_code == 403
+
+        monkeypatch.setenv("ORGANIZER_SIGNUP_CODE", "private-test-code")
+        assert c.post("/api/register", json={**payload, "organizer_code": "wrong"}).status_code == 403
+        created = c.post("/api/register", json={**payload, "organizer_code": "private-test-code"})
+        assert created.status_code == 200 and created.json()["role"] == "organizer"
+        logged_in = c.post("/api/login", json={"name": payload["name"], "passcode": payload["passcode"]})
+        assert logged_in.status_code == 200 and logged_in.json()["role"] == "organizer"
+
+
+def test_event_qr_registration_records_door_attendance():
+    with fresh_client() as c:
+        organizer = auth(c)
+        response = c.post("/api/register_attendee?event_id=1&door=1",
+                          json={"name": "Door guest", "phone": "+919876543210"})
+        assert response.status_code == 200 and response.json()["checked_in"] is True
+        duplicate = c.post("/api/register_attendee?event_id=1&door=1",
+                           json={"name": "Door guest", "phone": "+919876543210"})
+        assert duplicate.json()["duplicate"] and duplicate.json()["checked_in"]
+        event = c.get("/api/event?event_id=1", headers=organizer).json()
+        guest = next(a for a in event["attendees"] if a["phone"] == "+919876543210")
+        assert guest["checked_in"] == 1
+        assert c.post("/api/photo_checkin", headers=organizer, json={}).status_code == 404
+
+
+def test_schedule_and_alert_list_pagination_filters():
+    with fresh_client() as c:
+        headers = auth(c)
+        page = c.get("/api/schedule?event_id=1&status=pending&limit=1&offset=0",
+                     headers=headers)
+        assert page.status_code == 200
+        assert page.json()["limit"] == 1 and page.json()["offset"] == 0
+        assert all(item["status"] == "pending" for item in page.json()["items"])
+        assert c.get("/api/schedule?event_id=1&status=invalid", headers=headers).status_code == 400
+
+        alerts = c.get("/api/alerts?event_id=1&limit=1&offset=0", headers=headers)
+        assert alerts.status_code == 200
+        assert alerts.json()["limit"] == 1 and len(alerts.json()["items"]) <= 1
+
+
 def test_approve_edges():
     with fresh_client() as c:
         h = auth(c)

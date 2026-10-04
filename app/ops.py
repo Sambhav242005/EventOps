@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import csv
-import difflib
 import io
 import sqlite3
 
@@ -39,12 +38,6 @@ def table_rows(table: str, event_id: int = 1) -> list[dict]:
     finally:
         conn.close()
 
-
-def fuzzy_match(name: str, roster: list[str], cutoff: float = 0.82) -> str | None:
-    m = difflib.get_close_matches(name.strip(), roster, n=1, cutoff=cutoff)
-    return m[0] if m else None
-
-
 def check_in_token(token: str, event_id: int = 1) -> dict:
     """QR/manual check-in. Duplicate scans report already-checked-in time."""
     from .db import get_conn, now_iso
@@ -62,30 +55,5 @@ def check_in_token(token: str, event_id: int = 1) -> dict:
         conn.commit()
         d = dict(row)
         return {"ok": True, "duplicate": False, "name": d["name"]}
-    finally:
-        conn.close()
-
-
-def apply_photo_names(items: list[dict], event_id: int = 1) -> dict:
-    """High-confidence matches -> present (source=photo); rest -> review list. Never guess."""
-    from .db import get_conn, now_iso
-    conn = get_conn()
-    try:
-        roster = [dict(r) for r in conn.execute(
-            "SELECT id,name FROM attendees WHERE event_id=?", (event_id,)).fetchall()]
-        names = [r["name"] for r in roster]
-        marked, review = [], []
-        for it in items:
-            nm = str(it.get("name", "")).strip()
-            conf = float(it.get("confidence", 0) or 0)
-            hit = fuzzy_match(nm, names) if nm else None
-            if hit and conf >= 0.8:
-                conn.execute("UPDATE attendees SET checked_in=1, checked_in_at=?, source='photo'"
-                             " WHERE event_id=? AND name=?", (now_iso(), event_id, hit))
-                marked.append(hit)
-            else:
-                review.append({"name": nm, "confidence": conf})
-        conn.commit()
-        return {"marked": marked, "review": review}
     finally:
         conn.close()

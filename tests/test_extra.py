@@ -306,3 +306,66 @@ def test_lookup_facts_menu_price_status():
     assert lookup_facts("research backup caterers") is None
     price = lookup_facts("how much is the catering quote?")
     assert price and "80000" in price.replace(",", "")
+
+
+def _empty_db():
+    from app.db import get_conn, init_db
+    import pathlib
+    from app import db as _db
+    p = pathlib.Path(_db.DB_PATH)
+    if p.exists():
+        p.unlink()
+    init_db()
+    return get_conn()
+
+
+def test_empty_tables_no_crash():
+    from app.decision import lookup_facts, hours_to_event
+    from app.main import audience_phones
+    _empty_db()
+    # no event at all
+    assert lookup_facts("what is the menu?") is None
+    assert hours_to_event("not-a-date") == 999.0
+    assert audience_phones("team") == []
+    assert audience_phones("to:") == []
+
+
+def test_missing_rows_404():
+    from fastapi.testclient import TestClient
+    import os
+    os.environ.update({"LLM_BACKEND": "mock", "MESSAGING_BACKEND": "mock",
+                       "CALL_BACKEND": "mock", "RESEARCH_LOOP": "0"})
+    _empty_db()
+    from app.main import app
+    with TestClient(app) as c:
+        org = c.post("/api/login", json={"name": "Nobody", "passcode": "x"})
+        assert org.status_code == 401  # no members seeded
+        # seed one memberless event? event table empty -> event endpoint still 200
+        r = c.post("/api/login", json={"name": "A", "passcode": "1111"})
+        assert r.status_code == 401
+
+
+def test_missing_row_updates_404():
+    import os
+    os.environ.update({"LLM_BACKEND": "mock", "MESSAGING_BACKEND": "mock",
+                       "CALL_BACKEND": "mock", "RESEARCH_LOOP": "0"})
+    from fastapi.testclient import TestClient
+    from app.db import init_db, seed_demo
+    import pathlib
+    from app import db as _db
+    p = pathlib.Path(_db.DB_PATH)
+    if p.exists():
+        p.unlink()
+    init_db()
+    seed_demo()
+    from tests.helpers import ORG_NAME, org_code
+    from app.main import app
+    with TestClient(app) as c:
+        h = {"Authorization": "Bearer " + c.post(
+            "/api/login", json={"name": ORG_NAME, "passcode": org_code()}).json()["token"]}
+        assert c.post("/api/vendor_status", json={"id": 9999, "status": "cancelled"}, headers=h).status_code == 404
+        assert c.post("/api/attendee_phone", json={"id": 9999, "phone": "+911"}, headers=h).status_code == 404
+        assert c.post("/api/alerts/ack", json={"id": 9999}, headers=h).status_code == 404
+        assert c.get("/api/qr/QR-NOPE", headers=h).status_code == 404
+        assert c.post("/api/vendors", json={"name": "x"}, headers=h).status_code in (200, 400)
+        assert c.patch("/api/vendors/9999", json={"status": "confirmed"}, headers=h).status_code == 404

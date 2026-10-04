@@ -59,7 +59,7 @@ const GROUPS: { title: string; items: { name: string; body: string; tag: string 
       },
       {
         name: "Door + reports",
-        body: "QR check-in with duplicate detection, photo check-in that reads paper sign-in sheets, and one-click CSV exports of everything.",
+        body: "One event QR lets guests enter their details and check in at the door, with duplicate detection and one-click CSV exports.",
         tag: "On-site",
       },
     ],

@@ -10,5 +10,5 @@ npm run dev                  # http://localhost:3000
 ```
 
 Features: passcode login, WS room, approval buttons, backup/alert panels,
-caterer-cancel simulation, QR check-in, CSV export. Styling follows the Stitch
+event-specific guest check-in QR, CSV export. Styling follows the Stitch
 "Warm Orchestration" tokens mapped onto shadcn CSS variables.

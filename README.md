@@ -3,7 +3,9 @@
 Shared event room where the team chats normally and tags **@agent**.
 Gemma 4 proposes structured actions; a plain-Python **decision layer** gates risk;
 a background **researcher** watches weather/vendors and ranks backups; vendors are
-reached on **WhatsApp/phone**; attendance via QR + sign-in-sheet photo; one-click CSV.
+reached on **WhatsApp/phone**; guests check in with an event-specific QR; attendance
+and operational records export to CSV. Organizers can create multiple events and
+manage member/organizer roles.
 
 > Status: **M1–M7 complete** in mock mode. Live backends (Ollama/Gemini/ElevenLabs/
 > Twilio/Telegram) are real code behind env switches, untested here for lack of keys.
@@ -14,11 +16,13 @@ reached on **WhatsApp/phone**; attendance via QR + sign-in-sheet photo; one-clic
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env   # defaults: all mock backends, demo passcodes
-uvicorn app.main:app --port 8000
-# open http://localhost:8000 — login Asha/1111 (organizer) or Ravi/2222 (member)
+uvicorn app.main:app --host 127.0.0.1 --port 8000
+# In a second terminal:
+cd web && npm install && npm run dev -- --port 3003
+# Open http://localhost:3003 — demo organizer Asha/1111 or member Ravi/2222
 ```
 
-Tests: `python -m pytest -q` (22 tests, no network).
+Tests: `python -m pytest -q` (mock backends; no network required).
 
 ## Switch the brain / channels
 
@@ -49,8 +53,8 @@ Hindi/Hinglish: `lang` param plumbed through; quality untested — default `en` 
       +-- CallAdapter (elevenlabs/mock): brief+guardrails, caps, webhook summary
       +-- Research worker: Open-Meteo weather, vendor watch, candidate search
       |      (dedupe alerts, 10 searches/h cap, decision_log, sources+timestamps)
-      +-- Door: QR/manual/photo check-in (vision JSON, fuzzy-match, human review)
-      +-- CSV export (formula-sanitized) for all 7 tables
+      +-- Door: event QR self-check-in, duplicate-safe attendance, CSV export
+      +-- CSV export (formula-sanitized) for supported event records
 ```
 
 ## Auth (demo-grade, honest)
@@ -71,7 +75,7 @@ NOT production auth: short demo codes, no TLS/rotation story. Change
 ## Honest limitations
 
 - Mock LLM is a keyword router, not reasoning — plug Ollama/Gemini for real demos.
-- No TLS/auth hardening; single demo event; SQLite single-writer (fine for a fest team).
+- No TLS/auth hardening; SQLite single-writer (fine for a small event team).
 - Production WhatsApp needs a verified business account + approved templates;
   web-found vendors are unverified leads (stored with source + confidence + timestamp).
 - whatsapp-web.js (unofficial Puppeteer client) was considered and rejected:

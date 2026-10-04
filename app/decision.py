@@ -114,6 +114,12 @@ def lookup_facts(request: str, event_id: int = 1) -> str | None:
         conn.close()
     if not ev:
         return None
+    # event timing questions work even with zero vendors on file
+    if not vendors:
+        if re.search(r"\b(when|where|time|venue|event)\b", r):
+            return (f"{ev['name'] or 'The event'} is on {ev['date_time'] or '?'} "
+                    f"at {ev['venue'] or 'venue TBD'}. No vendors on file yet.")
+        return None
     # which vendor(s)? name match or category words
     hits = [v for v in vendors if v["name"].lower() in r]
     if not hits:

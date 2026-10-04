@@ -18,7 +18,7 @@ const FEATURES = [
   },
   {
     title: "Door in seconds",
-    body: "QR check-in plus photo check-in: snap the paper sign-in sheet and Gemma vision marks attendance, humans review the rest.",
+    body: "Guests scan one event QR, enter their details, and are checked in instantly. Export the final attendance list in one click.",
   },
 ];
 

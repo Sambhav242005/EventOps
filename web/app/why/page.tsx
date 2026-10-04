@@ -21,7 +21,7 @@ const REASONS = [
   },
   {
     title: "Built for real doors",
-    body: "Paper sign-in sheets photographed at the gate, QR tokens, duplicate-scan warnings, and CSV exports the accounts team actually accepts.",
+    body: "Guests scan one event QR, enter their details, and are checked in immediately. Organizers get duplicate detection and CSV exports.",
   },
 ];
 

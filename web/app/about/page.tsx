@@ -56,8 +56,8 @@ export default function About() {
           </p>
           <p>
             <strong className="text-foreground">4. Everyone is reached.</strong>{" "}
-            Vendors get WhatsApp and phone calls; guests get notices; the door runs
-            QR plus photo check-in; everything exports to CSV.
+            Vendors get WhatsApp and phone calls; guests scan an event QR to check
+            in at the door; attendance exports to CSV.
           </p>
         </CardContent>
       </Card>
