@@ -97,12 +97,23 @@ def test_elevenlabs_webhook_transcript_and_failure():
                                    "transcript": "Yes available, 45k for sound",
                                    "analysis": {}}}).json()
         assert r2["extracted"]["available"] is True
-        # bad signature rejected when secret configured
+        # bad signature rejected when secret configured; valid SDK-scheme passes
+        import hashlib
+        import hmac as _hmac
+        import time as _time
         os.environ["ELEVENLABS_WEBHOOK_SECRET"] = "s3cr3t"
         try:
             r3 = c.post("/webhooks/elevenlabs", json={"data": {}},
-                        headers={"xi-signature": "wrong"})
+                        headers={"ElevenLabs-Signature": "wrong"})
             assert r3.status_code == 401
+            body = b'{"type":"post_call_transcription","data":{"conversation_id":"c9"}}'
+            t = str(int(_time.time()))
+            sig = "t=%s,v0=%s" % (t, _hmac.new(b"s3cr3t", f"{t}.".encode() + body,
+                                               hashlib.sha256).hexdigest())
+            r4 = c.post("/webhooks/elevenlabs", content=body,
+                        headers={"ElevenLabs-Signature": sig,
+                                 "Content-Type": "application/json"})
+            assert r4.json()["ok"]
         finally:
             del os.environ["ELEVENLABS_WEBHOOK_SECRET"]
 

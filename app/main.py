@@ -426,11 +426,16 @@ async def wh_elevenlabs(req: Request) -> JSONResponse:
     secret = os.environ.get("ELEVENLABS_WEBHOOK_SECRET", "")
     raw = await req.body()
     if secret:
-        sig = req.headers.get("xi-signature", "")
-        expect = hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(sig, expect):
+        # Exact scheme per official SDK (webhooks_custom.construct_event):
+        # header 'ElevenLabs-Signature: t=<unix>,v0=<hex over "{t}.{rawBody}">', 30-min tolerance.
+        try:
+            from elevenlabs import ElevenLabs
+            data = ElevenLabs().webhooks.construct_event(
+                raw.decode(), req.headers.get("ElevenLabs-Signature", ""), secret)
+        except Exception:
             return JSONResponse({"ok": False, "error": "bad signature"}, status_code=401)
-    data = json.loads(raw or b"{}")
+    else:
+        data = json.loads(raw or b"{}")
     dtype = data.get("type", "post_call_transcription")
     d = data.get("data", data)
     cid = str(d.get("conversation_id", ""))
