@@ -1,10 +1,15 @@
 """SQLite schema + seed. Stdlib only so demo never depends on an ORM."""
 from __future__ import annotations
 
+import hashlib
 import os
 import sqlite3
 import time
 from pathlib import Path
+
+
+def _code_hash(code: str) -> str:
+    return hashlib.sha256(f"eventops:{code}".encode()).hexdigest()
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS events(
@@ -14,7 +19,8 @@ CREATE TABLE IF NOT EXISTS events(
   budget REAL DEFAULT 0, timezone TEXT DEFAULT 'Asia/Kolkata');
 CREATE TABLE IF NOT EXISTS members(
   id INTEGER PRIMARY KEY AUTOINCREMENT, event_id INTEGER NOT NULL,
-  name TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'member');
+  name TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'member',
+  passcode TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS vendors(
   id INTEGER PRIMARY KEY AUTOINCREMENT, event_id INTEGER NOT NULL,
   name TEXT NOT NULL, category TEXT NOT NULL DEFAULT 'misc',
@@ -71,6 +77,10 @@ def init_db(db_path: str = DB_PATH) -> None:
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     conn = get_conn(db_path)
     conn.executescript(SCHEMA)
+    # migration for DBs created before passcode column existed
+    cols = [r["name"] for r in conn.execute("PRAGMA table_info(members)").fetchall()]
+    if "passcode" not in cols:
+        conn.execute("ALTER TABLE members ADD COLUMN passcode TEXT NOT NULL DEFAULT ''")
     conn.commit()
     conn.close()
 
@@ -96,8 +106,9 @@ def seed_demo(db_path: str = DB_PATH) -> int:
     )
     eid = int(cur.lastrowid)
     conn.executemany(
-        "INSERT INTO members(event_id,name,role) VALUES(?,?,?)",
-        [(eid, "Asha", "organizer"), (eid, "Ravi", "member")],
+        "INSERT INTO members(event_id,name,role,passcode) VALUES(?,?,?,?)",
+        [(eid, "Asha", "organizer", _code_hash(os.environ.get("DEMO_ORG_PASS", "1111"))),
+         (eid, "Ravi", "member", _code_hash(os.environ.get("DEMO_MEMBER_PASS", "2222")))],
     )
     conn.executemany(
         "INSERT INTO vendors(event_id,name,category,phone,whatsapp,status,quote,conditions)"
